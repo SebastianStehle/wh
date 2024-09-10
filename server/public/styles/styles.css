@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-gray-100 h-full min-h-screen;
+}
+
+@layer components {
+  .form-row {
+    @apply flex flex-row items-start mb-3;
+  }
+
+  .form-label {
+    @apply w-48 pt-2 shrink-0;
+  }
+
+  .form-input {
+    @apply grow;
+  }
+
+  .invalid-feedback {
+    @apply text-sm text-error;
+  }
+
+  .validate-required {
+    @apply hidden;
+  }
+
+  .btn-google {
+    @apply bg-google border-google hover:bg-google-hover hover:border-google-hover;
+  }
+
+  .btn-microsoft {
+    @apply bg-microsoft border-microsoft hover:bg-microsoft-hover hover:border-microsoft-hover;
+  }
+
+  .logo {
+    @apply max-h-16 max-w-72;
+  }
+}
+
+.input.is-invalid {
+  @apply border-error;
+}
+
+.input.is-invalid~.invalid-feedback .server-error {
+  @apply block;
+}
+
+.was-validated .input:invalid {
+  @apply border-error;
+}
+
+.was-validated .input.is-invalid~.invalid-feedback .server-error {
+  @apply hidden;
+}
+
+.was-validated .input[required]:invalid~.invalid-feedback .validate-required.client-error {
+  @apply block text-white;
+}

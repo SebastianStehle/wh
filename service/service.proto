@@ -1,0 +1,55 @@
+option go_package = "api/tunnel";
+
+service WebhookService {
+    rpc subscribe(stream WebhookMessage) returns (stream HttpRequest);
+}
+
+message WebhookMessage {
+    oneof test_message_type {
+        // The client subscribes to a path.
+        SubscribeRequest subscribe = 1;
+
+        // The client answers an request.
+        HttpResponse response = 2;
+    }
+}
+
+message SubscribeRequest {
+    // The endpoint.
+    required string endpoint = 1;
+}
+
+message HttpRequest {
+    // The unique request ID.
+    required string request_id = 1;
+
+    // The request path.
+    required string path = 2;
+
+    // The request method.
+    required string method = 3;
+
+    // The request headers.
+    map<string, HttpHeaderValues> headers = 4;
+
+    // The request body.
+    required bytes body = 5;
+}
+
+message HttpResponse {
+    // The correlated request ID.
+    required string request_id = 1;
+
+    // The response headers.
+    map<string, HttpHeaderValues> headers = 2;
+
+    // The response status code.
+    required int32 status = 3;
+
+    // The response body.
+    required bytes body = 4;
+}
+
+message HttpHeaderValues {
+    repeated string values = 1;
+}

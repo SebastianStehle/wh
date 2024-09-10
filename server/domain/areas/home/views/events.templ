@@ -1,0 +1,158 @@
+package views
+
+import "wh/domain/texts"
+import "net/http"
+import "strconv"
+import "strings"
+
+templ EventsView(vm EventsVM) {
+	for _, e := range vm.Entries {
+		<div id={ getLogId(e) } class="event group" hx-ext="toggle" hx-toggle-class="open" hx-toggle-target=".card-header">
+			<div class="card bg-base-100 shadow-sm">
+				<div class="card-body card-header p-6 cursor-pointer">
+					<div class="flex justify-between gap-4">
+						<div class="w-8">
+							<svg
+								xmlns="http://www.w3.org/2000/svg"
+								width="24"
+								height="24"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								class="feather feather-chevron-right block group-[.open]:hidden stroke-gray-300"
+							>
+								<polyline points="9 18 15 12 9 6"></polyline>
+							</svg>
+
+							<svg
+								xmlns="http://www.w3.org/2000/svg"
+								width="24"
+								height="24"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								class="feather feather-chevron-down hidden group-[.open]:block stroke-gray-300"
+							>
+								<polyline points="6 9 12 15 18 9"></polyline>
+							</svg>
+						</div>
+                        <div class="text-sm">
+                            { getStartTime(e) }
+                        </div>
+						<code class="w-16">
+							{ e.Entry.Request.Method }
+						</code>
+						<code class="grow truncate">
+							/{ e.Entry.Endpoint }{ e.Entry.Request.Path }
+						</code>
+						<div class="justify-between">
+							if e.Entry.Response != nil {
+								<div class={ getStatusClass(e.Entry.Response.Status) }>
+									{ strconv.FormatInt(int64(e.Entry.Response.Status), 10) } { http.StatusText(int(e.Entry.Response.Status)) }
+								</div>
+							} else if e.Entry.Timeout {
+                                <div class="badge badge-ghost">
+                                    { texts.CommonRequestTimeoutLabel(ctx) }
+                                </div>
+                            } else if e.Entry.Error != nil {
+                                <div class="badge badge-ghost">
+                                    { texts.CommonRequestErrorLabel(ctx) }
+                                </div>
+                            }
+						</div>
+					</div>
+				</div>
+				<div class="card-body p-5 border-t-[1px] border-gray-200 hidden group-[.open]:block">
+                    <div class="flex flex-col gap-6">
+                        <div class="flex flex-col gap-2">
+                            <div class="flex justify-between items-end">
+                                <h4 class="text-xl">{ texts.CommonRequest(ctx) }</h4>
+
+                                <div class="text-sm">
+                                    { getStartTime(e) }
+                                </div>
+                            </div>
+
+                            @Headers(e.Entry.Request.Headers)
+
+                            if e.RequestEditor != nil {
+                                @Body(e.RequestEditor, string(e.Entry.Request.Body))
+                                } else if len(e.Entry.Request.Body) > 0 {
+                                <div class="border-[1px] border-gray-200 p-4 text-sm">
+                                    { texts.CommonBodyNotRendered(ctx) }
+                                </div>
+                            }
+                        </div>
+
+                        <div class="flex flex-col gap-2">
+                            <div class="flex justify-between items-end">
+                                <h4 class="text-xl">{ texts.CommonResponse(ctx) }</h4>
+                                
+                                <div class="text-sm">
+                                    { texts.CommonDuration(ctx) }: <strong>{ getDuration(e) }</strong>, { getCompleteTime(e) }
+                                </div>
+                            </div>
+
+                            if e.Entry.Response != nil {
+                                @Headers(e.Entry.Response.Headers)
+
+                                if e.ResponseEditor != nil {
+                                    @Body(e.ResponseEditor, string(e.Entry.Response.Body))
+                                } else if len(e.Entry.Response.Body) > 0 {
+                                    <div class="border-[1px] border-gray-200 p-4 text-sm">
+                                        { texts.CommonBodyNotRendered(ctx) }
+                                    </div>
+                                }
+                            } else if e.Entry.Timeout {
+                                <div class="border-[1px] border-gray-200 p-4 text-sm">
+                                    { texts.CommonRequestTimeoutText(ctx) }
+                                </div>
+                            } else if e.Entry.Error != nil {
+                                <div class="border-[1px] border-gray-200 p-4 text-sm">
+                                    { texts.CommonRequestErrorText(ctx) }
+                                </div>
+                            }
+                        </div>
+                    </div>
+				</div>
+			</div>
+		</div>
+	}
+}
+
+templ Headers(headers http.Header) {
+    <div>
+        <table class="table table-sm border-[1px] border-gray-200 table-fixed my-0">
+            <head>
+                <tr>
+                    <th class="w-[250px]">{ texts.CommonHeader(ctx) }</th>
+                    <th>{ texts.CommonValue(ctx) }</th>
+                </tr>
+            </head>
+        </table>
+        <div class="max-h-[300px] overflow-y-auto">
+            <table class="table table-sm border-[1px] border-t-0 border-gray-200 table-fixed my-0">
+                <tbody>
+                    for _, name := range getSortedHeaders(headers) {
+                        <tr>
+                            <td class="w-[250px] align-top">{ name }</td>
+                            <td class="break-all">{ strings.Join(headers[name], ",") }</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+templ Body(editor *EditorInfo, text string) {
+    <div class="border-[1px] border-gray-200">
+	    <textarea hx-ext="ace" hx-mode={ editor.Mode }>{ text }</textarea>
+    </div>
+}

@@ -1,0 +1,26 @@
+package views
+
+import "wh/domain/texts"
+import layout "wh/domain/layout/views"
+
+templ IndexView(vm IndexVM) {
+	@layout.Public("Home") {
+		<div class="flex flex-col gap-8">
+			<h2 class="text-center text-3xl">
+				{ texts.CommonWelcomeTitle(ctx) }
+			</h2>
+
+			<p class="text-sm text-gray-700 leading-6">
+				{ texts.CommonWelcomeLogin(ctx) }
+			</p>
+
+            <form method="post">
+                <div class="flex flex-col gap-2">
+                    <input type="text" placeholder={ texts.CommonApiKey(ctx) } name="apiKey" class="input input-bordered w-full" />
+
+                    <button class="btn btn-primary btn-block">{ texts.CommonContinue(ctx) }</button>
+                </div>
+            </form>
+		</div>
+	}
+}

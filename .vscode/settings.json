@@ -1,0 +1,7 @@
+{
+    "files.exclude": {
+        "**/*_templ.go": true,
+        "**/temp": true
+    },  
+    "css.customData": [".vscode/tailwind.json"]
+}

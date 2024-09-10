@@ -1,0 +1,17 @@
+package views
+
+import "wh/domain/texts"
+import layout "wh/domain/layout/views"
+
+templ InternalView(vm InternalVM) {
+	@layout.Internal("Home") {
+		<div class="flex flex-col gap-4">
+			<h2 class="text-3xl mt-8">
+				{ texts.CommonRequests(ctx) }
+			</h2>
+
+            <div id="events" class="flex flex-col gap-2" hx-ext="log" hx-events="true">
+            </div>
+		</div>
+	}
+}
