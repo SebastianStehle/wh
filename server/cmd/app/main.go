@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"net"
 	"net/http"
+	"strings"
 	"syscall"
+	"time"
 	"wh/domain"
 	"wh/domain/areas/api"
 	"wh/domain/areas/auth"
@@ -17,11 +19,12 @@ import (
 	"wh/infrastructure/server"
 
 	"go.uber.org/zap"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 	"google.golang.org/grpc"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/soheilhy/cmux"
 	"github.com/spf13/viper"
 	DEATH "github.com/vrecan/death/v3"
 )
@@ -54,40 +57,55 @@ func main() {
 
 	domain.SetDefaultConfig(config)
 
-	// The address also includes the port by default.
-	address := config.GetString("http.address")
-
-	listener, err := net.Listen("tcp", address)
-	if err != nil {
-		panic(fmt.Errorf("failed to listen to address %w", err))
-	}
-
 	publisher = publish.NewPublisher(config)
 	handleHome = home.NewHomeHandler(publisher, authenticator, logger)
 	handleApi = api.NewApiHandler(config, publisher, logger)
 	authenticator = auth.NewAuthenticator(config, logger)
 
-	m := cmux.New(listener)
-	startGrpc(m)
-	startHttp(m)
+	// Create a grpc server, but do not start it yet, because it is handled by the mux.
+	grpcServer := initGrpc()
 
-	go m.Serve()
+	// Create the echo http handler.
+	httpServer := startHttp()
 
-	logger.Info("starting server",
-		zap.String("address", address),
+	mixedHandler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.ProtoMajor == 2 && strings.Contains(request.Header.Get("Content-Type"), "application/grpc") {
+			grpcServer.ServeHTTP(writer, request)
+			return
+		}
+
+		httpServer.ServeHTTP(writer, request)
+	})
+
+	httpAddress := config.GetString("http.address")
+	http2Server := &http2.Server{}
+	http1Server := &http.Server{Handler: h2c.NewHandler(mixedHandler, http2Server), Addr: httpAddress}
+
+	go func() {
+		if err := http1Server.ListenAndServe(); err != http.ErrServerClosed {
+			logger.Fatal("Shutting down the server.",
+				zap.Error(err),
+			)
+		}
+	}()
+
+	logger.Info("Started listening to incoming https calls",
+		zap.String("address", httpAddress),
 	)
 
 	death := DEATH.NewDeath(syscall.SIGINT, syscall.SIGTERM)
 
 	err = death.WaitForDeath()
 	if err != nil {
-		panic(fmt.Errorf("fatal error creating logger: %w", err))
+		panic(fmt.Errorf("fatal error waiting for application stop:  %w", err))
 	}
 
-	m.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	http1Server.Shutdown(ctx)
 }
 
-func startHttp(mux cmux.CMux) {
+func startHttp() *echo.Echo {
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
@@ -106,20 +124,14 @@ func startHttp(mux cmux.CMux) {
 	e.GET("/events", handleHome.GetEvents, authenticator.MustBeAuthenticated)
 	e.Any("/endpoints/*", handleApi.Index)
 
-	server := &http.Server{
-		Handler: e,
-	}
-
-	match := mux.Match(cmux.Any())
-	go server.Serve(match)
+	return e
 }
 
-func startGrpc(mux cmux.CMux) {
+func initGrpc() *grpc.Server {
 	server := grpc.NewServer()
-	service := tunnel.NewCliServer(publisher)
+	service := tunnel.NewTunnelServer(publisher, logger)
 
 	generated.RegisterWebhookServiceServer(server, service)
 
-	match := mux.Match(cmux.HTTP2HeaderField("content-type", "application/grpc"))
-	go server.Serve(match)
+	return server
 }

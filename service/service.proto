@@ -11,6 +11,9 @@ message WebhookMessage {
 
         // The client answers an request.
         HttpResponse response = 2;
+
+        // The client answers with an error.
+        HttpError error = 3;
     }
 }
 
@@ -23,17 +26,20 @@ message HttpRequest {
     // The unique request ID.
     required string request_id = 1;
 
+    // The endpoint for debugging purposes.
+    required string endpoint = 2;
+
     // The request path.
-    required string path = 2;
+    required string path = 3;
 
     // The request method.
-    required string method = 3;
+    required string method = 4;
 
     // The request headers.
-    map<string, HttpHeaderValues> headers = 4;
+    map<string, HttpHeaderValues> headers = 5;
 
     // The request body.
-    required bytes body = 5;
+    required bytes body = 6;
 }
 
 message HttpResponse {
@@ -48,6 +54,14 @@ message HttpResponse {
 
     // The response body.
     required bytes body = 4;
+}
+
+message HttpError {
+    // The correlated request ID.
+    required string request_id = 1;
+
+    // The error message.
+    required string error = 2;
 }
 
 message HttpHeaderValues {

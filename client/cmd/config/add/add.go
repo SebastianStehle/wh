@@ -13,7 +13,7 @@ import (
 
 var AddCmd = &cobra.Command{
 	Use:   "add <ENDPOINT> <API_KEY>",
-	Short: "Add a new endpoint.",
+	Short: "Add a new endpoint to the configuration.",
 	Args:  cobra.MatchAll(cobra.ExactArgs(2), cobra.OnlyValidArgs),
 	Run: func(cmd *cobra.Command, args []string) {
 		endpoint, err := url.Parse(args[0])

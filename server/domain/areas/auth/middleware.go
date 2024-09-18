@@ -11,14 +11,14 @@ import (
 	"go.uber.org/zap"
 )
 
-type authenticator struct {
-	apiKey     string
-	cookieName string
-	secure     securecookie.SecureCookie
-	logger     *zap.Logger
+type authMiddleware struct {
+	authenticator Authenticator
+	cookieName    string
+	secure        securecookie.SecureCookie
+	logger        *zap.Logger
 }
 
-type Authenticator interface {
+type AuthMiddleware interface {
 	MustBeAuthenticated(next echo.HandlerFunc) echo.HandlerFunc
 
 	MustNotBeAuthenticated(next echo.HandlerFunc) echo.HandlerFunc
@@ -26,18 +26,16 @@ type Authenticator interface {
 	SetApiKey(c echo.Context, apiKey string) bool
 }
 
-func NewAuthenticator(config *viper.Viper, logger *zap.Logger) Authenticator {
-	apiKey := config.GetString("auth.apiKey")
-
+func NewAuthMiddleware(authenticator Authenticator, config *viper.Viper, logger *zap.Logger) AuthMiddleware {
 	secure := *securecookie.New(
 		createKey("auth.hashKey", config),
 		createKey("auth.blockKey", config))
 
-	return &authenticator{
-		secure:     secure,
-		logger:     logger,
-		apiKey:     apiKey,
-		cookieName: "API_KEY",
+	return &authMiddleware{
+		secure:        secure,
+		logger:        logger,
+		authenticator: authenticator,
+		cookieName:    "API_KEY",
 	}
 }
 
@@ -51,58 +49,77 @@ func createKey(name string, config *viper.Viper) []byte {
 	}
 }
 
-func (a authenticator) MustBeAuthenticated(next echo.HandlerFunc) echo.HandlerFunc {
+func (a authMiddleware) MustBeAuthenticated(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		cookie, _ := c.Cookie(a.cookieName)
-
-		if cookie == nil {
+		apiKey, err := a.getCookie(c)
+		if err != nil {
+			log.Warn("Failed to decode cookie.",
+				zap.Error(err),
+			)
+		} else if apiKey == "" {
 			log.Debug("Auth cookie not found.")
-			return redirectToLogin(c, a.cookieName)
-		}
+		} else {
+			if a.authenticator.Validate(apiKey) {
+				return next(c)
+			}
 
-		decoded := make(map[string]string)
-		if err := a.secure.Decode(a.cookieName, cookie.Value, &decoded); err != nil {
-			log.Warn("Failed to decode cookie.", zap.Error(err))
-			return redirectToLogin(c, a.cookieName)
-		}
-
-		apiKey := decoded[a.cookieName]
-
-		if apiKey != a.apiKey {
 			log.Warn("Auth cookie invalid.")
-			return redirectToLogin(c, a.cookieName)
 		}
 
-		return next(c)
+		return redirectToLogin(c, a.cookieName)
 	}
 }
 
-func (a authenticator) MustNotBeAuthenticated(next echo.HandlerFunc) echo.HandlerFunc {
+func (a authMiddleware) MustNotBeAuthenticated(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		cookie, _ := c.Cookie(a.cookieName)
 
-		if cookie != nil && cookie.Value != "" {
-			return c.Redirect(http.StatusFound, "/internal")
+		if cookie == nil || cookie.Value == "" {
+			return next(c)
 		}
 
-		return next(c)
+		return c.Redirect(http.StatusFound, "/internal")
 	}
 }
 
-func (a authenticator) SetApiKey(c echo.Context, apiKey string) bool {
-	if apiKey != a.apiKey {
+func (a authMiddleware) SetApiKey(c echo.Context, apiKey string) bool {
+	if !a.authenticator.Validate(apiKey) {
 		log.Warn("Invalid API Key entered")
 		return false
 	}
 
+	if err := a.SetCookie(c, apiKey); err != nil {
+		log.Warn("Failed to encode cookie.", zap.Error(err))
+		return false
+	}
+
+	return true
+}
+
+func (a authMiddleware) getCookie(c echo.Context) (string, error) {
+	cookie, _ := c.Cookie(a.cookieName)
+
+	if cookie == nil {
+		return "", nil
+	}
+
+	decoded := make(map[string]string)
+	if err := a.secure.Decode(a.cookieName, cookie.Value, &decoded); err != nil {
+		return "", err
+	}
+
+	apiKey := decoded[a.cookieName]
+	return apiKey, nil
+}
+
+func (a authMiddleware) SetCookie(c echo.Context, apiKey string) error {
 	values := map[string]string{
 		a.cookieName: apiKey,
 	}
 
 	encoded, err := a.secure.Encode(a.cookieName, values)
 	if err != nil {
-		log.Warn("Failed to encode cookie.", zap.Error(err))
-		return false
+		return err
 	}
 
 	cookie := &http.Cookie{
@@ -113,7 +130,7 @@ func (a authenticator) SetApiKey(c echo.Context, apiKey string) bool {
 	}
 
 	c.SetCookie(cookie)
-	return true
+	return nil
 }
 
 func redirectToLogin(c echo.Context, name string) error {

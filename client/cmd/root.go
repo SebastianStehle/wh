@@ -14,8 +14,8 @@ var rootCmd = &cobra.Command{
 	Short: "Command line interface to work with the wh API",
 	Long: `This CLI is responsible to establish the tunnel.
 
-Add the configuration using the host name as config name:
-	config add <URL> <APIKEY> 
+Add the configuration using the URL as config name:
+	config add <URL> <APIKEY>
 
 Create a tunnel from an endpoint to a local server:
 	tunnel <endpoint> <local_server>.`,
