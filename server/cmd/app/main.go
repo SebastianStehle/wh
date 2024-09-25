@@ -59,10 +59,10 @@ func main() {
 	domain.SetDefaultConfig(config)
 
 	publisher = publish.NewPublisher(config)
-	handleHome = home.NewHomeHandler(publisher, authenticator, logger)
-	handleApi = api.NewApiHandler(config, publisher, logger)
 	authenticator = auth.NewAuthenticator(config)
 	authMiddleware = auth.NewAuthMiddleware(authenticator, logger)
+	handleHome = home.NewHomeHandler(publisher, authenticator, logger)
+	handleApi = api.NewApiHandler(config, publisher, logger)
 
 	// Create a grpc server, but do not start it yet, because it is handled by the mux.
 	grpcServer := initGrpc()

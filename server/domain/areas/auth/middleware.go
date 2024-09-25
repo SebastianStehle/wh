@@ -66,6 +66,7 @@ func (a authMiddleware) MustNotBeAuthenticated(next echo.HandlerFunc) echo.Handl
 		apiKey, err := a.authenticator.GetApiKey(c)
 
 		if err != nil {
+			log.Info("FOO")
 			log.Warn("Failed to decode cookie.",
 				zap.Error(err),
 			)
