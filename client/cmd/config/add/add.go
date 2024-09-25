@@ -12,18 +12,18 @@ import (
 )
 
 var AddCmd = &cobra.Command{
-	Use:   "add <ENDPOINT> <API_KEY>",
+	Use:   "add <SERVER> <API_KEY>",
 	Short: "Add a new endpoint to the configuration.",
 	Args:  cobra.MatchAll(cobra.ExactArgs(2), cobra.OnlyValidArgs),
 	Run: func(cmd *cobra.Command, args []string) {
-		endpoint, err := url.Parse(args[0])
+		server, err := url.Parse(args[0])
 		if err != nil {
-			fmt.Printf("Error: Endpoint is not a valid URL.\n")
+			fmt.Printf("Error: Server is not a valid URL.\n")
 			os.Exit(1)
 			return
 		}
 
-		name := strings.ToLower(endpoint.Host)
+		name := strings.ToLower(server.Host)
 
 		nameFlag := cmd.Flag("name")
 		if nameFlag != nil {
@@ -51,7 +51,7 @@ var AddCmd = &cobra.Command{
 		cfg.Server = name
 		cfg.Servers = append(cfg.Servers, config.Server{
 			Name:     name,
-			Endpoint: endpoint.String(),
+			Endpoint: server.String(),
 			ApiKey:   args[1],
 		})
 

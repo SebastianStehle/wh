@@ -52,8 +52,10 @@ func (h homeHandler) GetIndex(c echo.Context) error {
 func (h homeHandler) PostIndex(c echo.Context) error {
 	apiKey := c.FormValue("apiKey")
 
-	if h.authenticator.SetApiKey(c, apiKey) {
-		return c.Redirect(http.StatusFound, "/internal")
+	if h.authenticator.Validate(apiKey) {
+		if err := h.authenticator.SetApiKey(c, apiKey); err == nil {
+			return c.Redirect(http.StatusFound, "/internal")
+		}
 	}
 
 	vm := views.IndexVM{

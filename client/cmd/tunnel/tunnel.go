@@ -20,7 +20,7 @@ var (
 )
 
 var TunnelCmd = &cobra.Command{
-	Use:   "tunnel",
+	Use:   "tunnel <ENDPOINT> <API_KEY>",
 	Short: "Creates a tunnel with and endpoint",
 	Long: `Pass in the endpoint and the local server:
 
@@ -33,18 +33,16 @@ for example:
 	Run: func(cmd *cobra.Command, args []string) {
 		endpoint := args[0]
 
-		client, err := api.GetClient()
+		client, ctx, err := api.GetClient()
 		if err != nil {
-			fmt.Printf("Error: Failed to retrieve configuration. %v\n", err)
+			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 			return
 		}
 
-		fmt.Printf("1")
-
 		defer client.Connection.Close()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Hour)
+		ctx, cancel := context.WithTimeout(ctx, 4*time.Hour)
 		defer cancel()
 
 		stream, err := client.Service.Subscribe(ctx)
@@ -70,10 +68,12 @@ for example:
 
 		localBase := args[1]
 
+		fmt.Println()
 		fmt.Printf("WEBHOOK TUNNEL")
 		fmt.Println()
-		fmt.Printf("Forwarding from: 		%s\n", formatUrl(client.Config.Endpoint, endpoint))
-		fmt.Printf("Forwarding to: 		  %s\n", localBase)
+		fmt.Println()
+		fmt.Printf("Forwarding from:  %s\n", formatUrl(client.Config.Endpoint, "endpoints", endpoint))
+		fmt.Printf("Forwarding to:    %s\n", localBase)
 		fmt.Println()
 		fmt.Println("HTTP Requests")
 		fmt.Println("-------------")

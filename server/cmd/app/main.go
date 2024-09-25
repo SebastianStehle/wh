@@ -30,12 +30,13 @@ import (
 )
 
 var (
-	authenticator auth.Authenticator
-	config        *viper.Viper
-	handleApi     api.ApiHandler
-	handleHome    home.HomeHandler
-	logger        *zap.Logger
-	publisher     publish.Publisher
+	authenticator  auth.Authenticator
+	authMiddleware auth.AuthMiddleware
+	config         *viper.Viper
+	handleApi      api.ApiHandler
+	handleHome     home.HomeHandler
+	logger         *zap.Logger
+	publisher      publish.Publisher
 )
 
 func main() {
@@ -60,7 +61,8 @@ func main() {
 	publisher = publish.NewPublisher(config)
 	handleHome = home.NewHomeHandler(publisher, authenticator, logger)
 	handleApi = api.NewApiHandler(config, publisher, logger)
-	authenticator = auth.NewAuthenticator(config, logger)
+	authenticator = auth.NewAuthenticator(config)
+	authMiddleware = auth.NewAuthMiddleware(authenticator, logger)
 
 	// Create a grpc server, but do not start it yet, because it is handled by the mux.
 	grpcServer := initGrpc()
@@ -117,11 +119,11 @@ func startHttp() *echo.Echo {
 	e.Static("/public", "./public")
 	e.HTTPErrorHandler = handleHome.ErrorHandler
 
-	e.POST("/", handleHome.PostIndex, authenticator.MustNotBeAuthenticated)
-	e.GET("/", handleHome.GetIndex, authenticator.MustNotBeAuthenticated)
-	e.GET("/internal", handleHome.GetInternal, authenticator.MustBeAuthenticated)
+	e.POST("/", handleHome.PostIndex, authMiddleware.MustNotBeAuthenticated)
+	e.GET("/", handleHome.GetIndex, authMiddleware.MustNotBeAuthenticated)
+	e.GET("/internal", handleHome.GetInternal, authMiddleware.MustBeAuthenticated)
 	e.GET("/error", handleHome.GetError)
-	e.GET("/events", handleHome.GetEvents, authenticator.MustBeAuthenticated)
+	e.GET("/events", handleHome.GetEvents, authMiddleware.MustBeAuthenticated)
 	e.Any("/endpoints/*", handleApi.Index)
 
 	return e

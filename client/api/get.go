@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"wh/cli/api/tunnel"
 	"wh/cli/config"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 type Client struct {
@@ -15,15 +17,15 @@ type Client struct {
 	Connection *grpc.ClientConn
 }
 
-func GetClient() (*Client, error) {
+func GetClient() (*Client, context.Context, error) {
 	server, err := config.GetServer()
 	if server == nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	connection, err := grpc.NewClient("localhost:5000", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect %v", err)
+		return nil, nil, fmt.Errorf("failed to connect %v", err)
 	}
 
 	client := &Client{
@@ -32,5 +34,7 @@ func GetClient() (*Client, error) {
 		Connection: connection,
 	}
 
-	return client, nil
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "authorization", server.ApiKey)
+
+	return client, ctx, nil
 }
