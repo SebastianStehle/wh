@@ -1,4 +1,4 @@
-name: Dev
+name: Dev CLI
 concurrency: build
 
 on:
