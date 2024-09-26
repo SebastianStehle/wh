@@ -11,6 +11,7 @@ on:
 jobs:
   build:
     runs-on: ${{matrix.os}}
+
     strategy:
       matrix:
         include:
@@ -58,6 +59,9 @@ jobs:
         go-version: '1.23.x'
         cache-dependency-path: client/go.sum
 
+    - name: Prepare - Display Go version
+      run: go version
+
     - name: Build - Install dependencies
       run: go get .
       working-directory: ./client
@@ -71,7 +75,7 @@ jobs:
       working-directory: ./client
 
     - name: Publish Archive
-      run: cd dist/${{ matrix.name }} && zip -r archives/${{ matrix.name }}.zip *
+      run: ls -r && cd dist/${{ matrix.name }} && zip -r archives/${{ matrix.name }}.zip *
       working-directory: ./client
         
     - name: Publish - Artifact
