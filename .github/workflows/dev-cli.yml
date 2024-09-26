@@ -11,7 +11,40 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{matrix.os}}
+    strategy:
+      matrix:
+        include:
+          # Windows
+          - build: windows_amd64
+            name: windows_amd64
+            os: ubuntu-latest
+            goos: windows
+            goarch: amd64
+            file: wh.exe
+
+          # Linux
+          - build: linux-amd64
+            name: linux_amd64
+            os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            file: wh
+
+          - build: darwin-arm64
+            name: darwin_arm64
+            os: ubuntu-latest
+            goos: darwin
+            goarch: arm64
+            file: wh
+
+          # Mac
+          - build: darwin-amd64
+            name: darwin_amd64
+            os: ubuntu-latest
+            goos: darwin
+            goarch: amd64
+            file: wh
         
     steps:
     - name: Prepare - Checkout
@@ -31,38 +64,22 @@ jobs:
         cd client
         go get .
 
-    - name: Build - cli_linux_amd64
+    - name: Build
       run: |
         cd client
-        go build -o cli_linux_amd64/cli main.go
+        go build -o ${{ matrix.name }}/${{ matrix.file }} main.go
       env:
-        GOOS: linux
-        GOARCH: amd64
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
         CGO_ENABLED: 0
 
-    - name: Build - cli_windows_amd64
+    - name: Publish Archive
       run: |
-        cd client
-        go build -o cli_windows_amd64/cli main.go
-      env:
-        GOOS: windows
-        GOARCH: amd64
-        CGO_ENABLED: 0
-
-    - name: Build - cli_darwin_amd64
-      run: |
-        cd client
-        go build -o cli_darwin_amd64/cli main.go
-      env:
-        GOOS: darwin
-        GOARCH: amd64
-        CGO_ENABLED: 0
-
-    - name: Build - cli_darwin_arm64
-      run: |
-        cd client
-        go build -o cli_darwin_arm64/cli main.go
-      env:
-        GOOS: darwin
-        GOARCH: arm64
-        CGO_ENABLED: 0
+        cd ${{ matrix.name }}
+        zip -r '${{ matrix.name }}/${{ matrix.name }}.zip' *
+        
+    - name: Publish - Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.name }}
+        path: ${{ matrix.name }}
