@@ -41,7 +41,7 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
         tags: wh-local
-        file: server/Dockerfile
+        context: ./server
 
     - name: Publish - Login to Docker Hub
       if: github.event_name != 'pull_request'
