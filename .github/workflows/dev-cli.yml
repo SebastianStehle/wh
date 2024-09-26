@@ -59,13 +59,11 @@ jobs:
         cache-dependency-path: client/go.sum
 
     - name: Build - Install dependencies
-      run: |
-        go get .
+      run: go get .
       working-directory: ./client
 
     - name: Build
-      run: |
-        go build -o dist/${{ matrix.name }}/${{ matrix.file }} main.go
+      run: go build -o dist/${{ matrix.name }}/${{ matrix.file }} main.go
       env:
         GOOS: ${{ matrix.goos }}
         GOARCH: ${{ matrix.goarch }}
@@ -73,9 +71,7 @@ jobs:
       working-directory: ./client
 
     - name: Publish Archive
-      run: |
-        cd dist/${{ matrix.name }}
-        zip -r archives/${{ matrix.name }}.zip' *
+      run: cd dist/${{ matrix.name }} && zip -r archives/${{ matrix.name }}.zip' *
       working-directory: ./client
         
     - name: Publish - Artifact
