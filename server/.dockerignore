@@ -1,0 +1,8 @@
+node_modules
+
+# Air output folder
+temp
+tmp
+
+**/*_templ.go
+**/*_templ.txt

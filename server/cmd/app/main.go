@@ -91,7 +91,7 @@ func main() {
 		}
 	}()
 
-	logger.Info("Started listening to incoming https calls",
+	logger.Info("Started listening to incoming http calls",
 		zap.String("address", httpAddress),
 	)
 

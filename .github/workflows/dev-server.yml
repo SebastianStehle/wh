@@ -1,0 +1,63 @@
+name: Dev
+concurrency: build
+
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+        
+    steps:
+    - name: Prepare - Checkout
+      uses: actions/checkout@v4.0.0
+
+    - name: Prepare - Inject short Variables
+      uses: rlespinasse/github-slug-action@v4.3.2
+
+    - name: Prepare - Set up QEMU
+      uses: docker/setup-qemu-action@v3.0.0
+
+    - name: Prepare - Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3.0.0
+
+    - name: Calculate Version
+      if: github.event_name != 'pull_request'
+      env:
+        BUILD_NUMBER: ${{ github.run_number }}
+      run: |
+        echo "BUILD_NUMBER=$(($BUILD_NUMBER + 0))" >> $GITHUB_ENV
+
+    - name: Build - BUILD
+      uses: docker/build-push-action@v6.2.0
+      with:
+        load: true
+        build-args: "WH_RUNTIME_VERSION=1.0.0-dev-${{ env.BUILD_NUMBER }}"
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        tags: wh-local
+        file: server/Dockerfile
+
+    - name: Publish - Login to Docker Hub
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3.0.0
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Publish - Rename Tags
+      if: github.event_name != 'pull_request'
+      run: |
+        docker tag wh-local sebastianstehle/wh-dev
+        docker tag wh-local sebastianstehle/wh-dev:${{ env.BUILD_NUMBER }}
+    
+    - name: Publish - Push Tags
+      if: github.event_name != 'pull_request'
+      run: |
+        docker push sebastianstehle/wh-dev
+        docker push sebastianstehle/wh-dev:${{ env.BUILD_NUMBER }}
