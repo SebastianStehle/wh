@@ -53,6 +53,9 @@ jobs:
     - name: Prepare - Inject short Variables
       uses: rlespinasse/github-slug-action@v4.3.2
 
+    - name: Prepare - Set up Zip
+      uses: montudor/action-zip@v1.0.0
+
     - name: Prepare - Set up Go
       uses: actions/setup-go@v5
       with:
