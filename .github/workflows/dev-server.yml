@@ -1,5 +1,4 @@
 name: Dev Server
-concurrency: build
 
 on:
   push:
