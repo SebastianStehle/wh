@@ -32,28 +32,36 @@ jobs:
         go get .
 
     - name: Build - cli_linux_amd64
-      run: go build -o cli_linux_amd64/cli main.go
+      run: |
+        cd client
+        go build -o cli_linux_amd64/cli main.go
       env:
         GOOS: linux
         GOARCH: amd64
         CGO_ENABLED: 0
 
     - name: Build - cli_windows_amd64
-      run: go build -o cli_linux_amd64/cli main.go
+      run: |
+        cd client
+        go build -o cli_windows_amd64/cli main.go
       env:
         GOOS: windows
         GOARCH: amd64
         CGO_ENABLED: 0
 
     - name: Build - cli_darwin_amd64
-      run: go build -o cli_linux_amd64/cli main.go
+      run: |
+        cd client
+        go build -o cli_darwin_amd64/cli main.go
       env:
         GOOS: darwin
         GOARCH: amd64
         CGO_ENABLED: 0
 
     - name: Build - cli_darwin_arm64
-      run: go build -o cli_linux_amd64/cli main.go
+      run: |
+        cd client
+        go build -o cli_darwin_arm64/cli main.go
       env:
         GOOS: darwin
         GOARCH: arm64
