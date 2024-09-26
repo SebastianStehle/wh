@@ -66,7 +66,7 @@ jobs:
     - name: Build
       run: |
         cd client
-        go build -o ${{ matrix.name }}/${{ matrix.file }} main.go
+        go build -o dist/${{ matrix.name }}/${{ matrix.file }} main.go
       env:
         GOOS: ${{ matrix.goos }}
         GOARCH: ${{ matrix.goarch }}
@@ -74,11 +74,11 @@ jobs:
 
     - name: Publish Archive
       run: |
-        cd ${{ matrix.name }}
-        zip -r '${{ matrix.name }}/${{ matrix.name }}.zip' *
+        cd dist/${{ matrix.name }}
+        zip -r archives/${{ matrix.name }}.zip' *
         
     - name: Publish - Artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.name }}
-        path: ${{ matrix.name }}
+        path: archives/${{ matrix.name }}
