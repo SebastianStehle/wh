@@ -60,25 +60,26 @@ jobs:
 
     - name: Build - Install dependencies
       run: |
-        cd client
         go get .
+      working-directory: ./client
 
     - name: Build
       run: |
-        cd client
         go build -o dist/${{ matrix.name }}/${{ matrix.file }} main.go
       env:
         GOOS: ${{ matrix.goos }}
         GOARCH: ${{ matrix.goarch }}
         CGO_ENABLED: 0
+      working-directory: ./client
 
     - name: Publish Archive
       run: |
         cd dist/${{ matrix.name }}
         zip -r archives/${{ matrix.name }}.zip' *
+      working-directory: ./client
         
     - name: Publish - Artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.name }}
-        path: archives/${{ matrix.name }}
+        path: client/archives/${{ matrix.name }}
