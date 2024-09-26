@@ -85,4 +85,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.name }}
-        path: ./dist/${{ matrix.name }}
+        path: ./client/dist/${{ matrix.name }}
