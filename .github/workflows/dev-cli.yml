@@ -71,7 +71,7 @@ jobs:
       working-directory: ./client
 
     - name: Publish Archive
-      run: cd dist/${{ matrix.name }} && zip -r archives/${{ matrix.name }}.zip' *
+      run: cd dist/${{ matrix.name }} && zip -r archives/${{ matrix.name }}.zip *
       working-directory: ./client
         
     - name: Publish - Artifact
