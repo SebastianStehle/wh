@@ -1,0 +1,60 @@
+name: Dev
+concurrency: build
+
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+        
+    steps:
+    - name: Prepare - Checkout
+      uses: actions/checkout@v4.0.0
+
+    - name: Prepare - Inject short Variables
+      uses: rlespinasse/github-slug-action@v4.3.2
+
+    - name: Prepare - Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.23.x'
+        cache-dependency-path: client/go.sum
+
+    - name: Build - Install dependencies
+      run: |
+        cd client
+        go get .
+
+    - name: Build - cli_linux_amd64
+      run: go build -o cli_linux_amd64/cli main.go
+      env:
+        GOOS: linux
+        GOARCH: amd64
+        CGO_ENABLED: 0
+
+    - name: Build - cli_windows_amd64
+      run: go build -o cli_linux_amd64/cli main.go
+      env:
+        GOOS: windows
+        GOARCH: amd64
+        CGO_ENABLED: 0
+
+    - name: Build - cli_darwin_amd64
+      run: go build -o cli_linux_amd64/cli main.go
+      env:
+        GOOS: darwin
+        GOARCH: amd64
+        CGO_ENABLED: 0
+
+    - name: Build - cli_darwin_arm64
+      run: go build -o cli_linux_amd64/cli main.go
+      env:
+        GOOS: darwin
+        GOARCH: arm64
+        CGO_ENABLED: 0
