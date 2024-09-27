@@ -3,16 +3,17 @@
 # Build the application from source
 FROM golang:1.23-alpine AS build-stage
 
+RUN go install github.com/a-h/templ/cmd/templ@latest
+
 WORKDIR /app
 
 # Download all the dependencies
 COPY go.mod .
 COPY go.sum .
 
-# Install packages and templ compiler
 RUN go mod download
-RUN go install github.com/a-h/templ/cmd/templ@latest
 
+# Copy all remaining files
 COPY . .
 
 # Compile templ
@@ -29,8 +30,6 @@ WORKDIR /app
 COPY --from=build-stage /app/app /app
 COPY --from=build-stage /app/configs/ /app/configs/
 COPY --from=build-stage /app/public/ /app/public/
-
-RUN ls -R
 
 EXPOSE 5000
 
