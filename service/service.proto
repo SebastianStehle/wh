@@ -1,19 +1,32 @@
 option go_package = "api/tunnel";
 
 service WebhookService {
-    rpc subscribe(stream WebhookMessage) returns (stream HttpRequest);
+    rpc subscribe(stream ClientMessage) returns (stream ServerMessage);
 }
 
-message WebhookMessage {
+message ClientMessage {
     oneof test_message_type {
         // The client subscribes to a path.
         SubscribeRequest subscribe = 1;
 
         // The client answers an request.
-        HttpResponse response = 2;
+        ResponseStart response_start = 2;
+
+        // The client answers an request.
+        ResponseStart response_data = 3;
 
         // The client answers with an error.
-        HttpError error = 3;
+        ClientError error = 4;
+    }
+}
+
+message ServerMessage {
+    oneof test_message_type {
+        // The server sends a request start.
+        RequestStart request_start = 1;
+
+        // The server sends a body request.
+        RequestStart request_data = 2;
     }
 }
 
@@ -22,7 +35,7 @@ message SubscribeRequest {
     required string endpoint = 1;
 }
 
-message HttpRequest {
+message RequestStart {
     // The unique request ID.
     required string request_id = 1;
 
@@ -37,12 +50,20 @@ message HttpRequest {
 
     // The request headers.
     map<string, HttpHeaderValues> headers = 5;
-
-    // The request body.
-    required bytes body = 6;
 }
 
-message HttpResponse {
+message RequestData {
+    // The unique request ID.
+    required string request_id = 1;
+
+    // The data chunk
+    required bytes data = 2;
+
+    // Indicates if the request is complete
+    required bool completed = 3;
+}
+
+message ResponseStart {
     // The correlated request ID.
     required string request_id = 1;
 
@@ -51,12 +72,20 @@ message HttpResponse {
 
     // The response status code.
     required int32 status = 3;
-
-    // The response body.
-    required bytes body = 4;
 }
 
-message HttpError {
+message ResponseData {
+    // The unique request ID.
+    required string request_id = 1;
+
+    // The data chunk
+    required bytes data = 2;
+
+    // Indicates if the response is complete
+    required bool completed = 3;
+}
+
+message ClientError {
     // The correlated request ID.
     required string request_id = 1;
 

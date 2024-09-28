@@ -11,9 +11,9 @@ type LogEntry struct {
 	Completed time.Time
 	Endpoint  string
 	Error     error
-	Request   HttpRequest
+	Request   HttpRequestStart
 	RequestId string
-	Response  *HttpResponse
+	Response  *HttpResponseStart
 	Size      int
 	Started   time.Time
 	Timeout   bool
@@ -27,9 +27,9 @@ type log struct {
 }
 
 type Log interface {
-	LogRequest(requestId string, endpoint string, request HttpRequest)
+	LogRequest(requestId string, endpoint string, request HttpRequestStart)
 
-	LogResponse(requestId string, response HttpResponse)
+	LogResponse(requestId string, response HttpResponseStart)
 
 	LogTimeout(requestId string)
 
@@ -45,30 +45,26 @@ func NewLog(maxSize int, maxEntries int) Log {
 		"Content-Type": []string{"text/json"},
 	}
 
-	request1 := HttpRequest{
+	request1 := HttpRequestStart{
 		Method:  "GET",
 		Headers: headers,
 		Path:    "/foo/bar",
-		Body:    []byte("{ \"hello\": \"world\" }"),
 	}
 
-	request2 := HttpRequest{
+	request2 := HttpRequestStart{
 		Method:  "POST",
 		Headers: headers,
 		Path:    "/foo/bar",
-		Body:    []byte("{ \"hello\": \"world\" }"),
 	}
 
-	request3 := HttpRequest{
+	request3 := HttpRequestStart{
 		Method:  "DELETE",
 		Headers: headers,
 		Path:    "/foo/bar",
-		Body:    []byte("{ \"hello\": \"world\" }"),
 	}
 
-	response := HttpResponse{
+	response := HttpResponseStart{
 		Headers: headers,
-		Body:    []byte("{ \"hello\": \"world\" }"),
 		Status:  200,
 	}
 
@@ -103,7 +99,7 @@ func NewLog(maxSize int, maxEntries int) Log {
 	}
 }
 
-func (l *log) LogRequest(requestId string, endpoint string, request HttpRequest) {
+func (l *log) LogRequest(requestId string, endpoint string, request HttpRequestStart) {
 	if l.maxEntries <= 0 || l.maxSize <= 0 {
 		return
 	}
@@ -137,7 +133,7 @@ func (l log) LogTimeout(requestId string) {
 	l.ensureSize()
 }
 
-func (l log) LogResponse(requestId string, response HttpResponse) {
+func (l log) LogResponse(requestId string, response HttpResponseStart) {
 	entry := l.findEntry(requestId)
 	if entry == nil || entry.Response != nil || entry.Timeout || entry.Error != nil {
 		return
@@ -216,19 +212,17 @@ func (e *LogEntry) estimateSize() {
 	}
 }
 
-func (r HttpRequest) estimateRequestSize() int {
+func (r HttpRequestStart) estimateRequestSize() int {
 	size := 0
 	size += len(r.Path)
 	size += len(r.Method)
 	size += estimateHeaderSize(r.Headers)
-	size += len(r.Body)
 	return size
 }
 
-func (r HttpResponse) estimateResponseSize() int {
+func (r HttpResponseStart) estimateResponseSize() int {
 	size := 0
 	size += estimateHeaderSize(r.Headers)
-	size += len(r.Body)
 	return size
 }
 
