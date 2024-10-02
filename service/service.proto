@@ -13,10 +13,10 @@ message ClientMessage {
         ResponseStart response_start = 2;
 
         // The client answers an request.
-        ResponseStart response_data = 3;
+        ResponseData response_data = 3;
 
         // The client answers with an error.
-        ClientError error = 4;
+        TransportError error = 4;
     }
 }
 
@@ -26,7 +26,10 @@ message ServerMessage {
         RequestStart request_start = 1;
 
         // The server sends a body request.
-        RequestStart request_data = 2;
+        RequestData request_data = 2;
+
+        // The client answers with an error.
+        TransportError error = 3;
     }
 }
 
@@ -85,7 +88,7 @@ message ResponseData {
     required bool completed = 3;
 }
 
-message ClientError {
+message TransportError {
     // The correlated request ID.
     required string request_id = 1;
 

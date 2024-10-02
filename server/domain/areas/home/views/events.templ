@@ -82,11 +82,6 @@ templ EventsView(vm EventsVM) {
                             @Headers(e.Entry.Request.Headers)
 
                             if e.RequestEditor != nil {
-                                @Body(e.RequestEditor, string(e.Entry.Request.Body))
-                                } else if len(e.Entry.Request.Body) > 0 {
-                                <div class="border-[1px] border-gray-200 p-4 text-sm">
-                                    { texts.CommonBodyNotRendered(ctx) }
-                                </div>
                             }
                         </div>
 
@@ -101,14 +96,6 @@ templ EventsView(vm EventsVM) {
 
                             if e.Entry.Response != nil {
                                 @Headers(e.Entry.Response.Headers)
-
-                                if e.ResponseEditor != nil {
-                                    @Body(e.ResponseEditor, string(e.Entry.Response.Body))
-                                } else if len(e.Entry.Response.Body) > 0 {
-                                    <div class="border-[1px] border-gray-200 p-4 text-sm">
-                                        { texts.CommonBodyNotRendered(ctx) }
-                                    </div>
-                                }
                             } else if e.Entry.Timeout {
                                 <div class="border-[1px] border-gray-200 p-4 text-sm">
                                     { texts.CommonRequestTimeoutText(ctx) }

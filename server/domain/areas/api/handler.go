@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -12,22 +13,21 @@ import (
 	"go.uber.org/zap"
 )
 
+type apiHandler struct {
+	publisher publish.Publisher
+	timeout   time.Duration
+	logger    *zap.Logger
+}
+
 type ApiHandler interface {
 	Index(c echo.Context) error
 }
 
-type apiHandler struct {
-	publisher      publish.Publisher
-	maxRequestTime time.Duration
-	logger         *zap.Logger
-}
-
 func NewApiHandler(config *viper.Viper, publisher publish.Publisher, logger *zap.Logger) ApiHandler {
 	return &apiHandler{
-		publisher:      publisher,
-		maxRequestSize: config.GetInt("request.maxSize"),
-		maxRequestTime: config.GetDuration("request.timeout"),
-		logger:         logger,
+		publisher: publisher,
+		timeout:   config.GetDuration("request.timeout"),
+		logger:    logger,
 	}
 }
 
@@ -58,7 +58,7 @@ func (a apiHandler) Index(c echo.Context) error {
 		Headers: request.Header,
 	}
 
-	tunneled, err := a.publisher.ForwardRequest(endpoint, forwardedRequest)
+	tunneled, err := a.publisher.ForwardRequest(endpoint, a.timeout, forwardedRequest)
 	if errors.Is(err, publish.ErrNotRegistered) {
 		response.WriteHeader(http.StatusServiceUnavailable)
 		return nil
@@ -66,45 +66,61 @@ func (a apiHandler) Index(c echo.Context) error {
 		return err
 	}
 
-	chDone := make(chan bool)
-	chError := make(chan error)
-	tunneled.OnResponseStart(func(message publish.HttpResponseStart) {
-		for k, v := range message.Headers {
-			for _, h := range v {
-				response.Header().Add(k, h)
-			}
+	defer func() {
+		tunneled.Close()
+	}()
+
+	body := request.Body
+	for {
+		buffer := make([]byte, 4096)
+		n, err := body.Read(buffer)
+		if err != nil && err != io.EOF {
+			tunneled.Close()
+			return err
 		}
 
-		response.WriteHeader(int(message.Status))
-	})
+		completed := err == io.EOF
 
-	tunneled.OnResponseChunk(func(message publish.HttpResponseChunk) {
-		if len(message.Chunk) > 0 {
-			_, err := response.Write(message.Chunk)
-			if err != nil {
-				chError <- err
-			}
+		tunneled.EmitRequestData(buffer[:n], completed)
+		if completed {
+			break
 		}
-
-		if message.Completed {
-			chDone <- true
-		}
-	})
-
-	tunneled.OnClientError(func(error error) {
-		chError <- error
-	})
-
-	timer := time.After(a.maxRequestTime)
-	select {
-	case <-chDone:
-		return nil
-	case err := <-chError:
-		return err
-	case <-timer:
-		response.WriteHeader(int(message.Status))
 	}
-	return err
+
+	ch := tunneled.Events()
+	for e := range ch {
+		switch m := e.(type) {
+		case publish.Timeout:
+			response.WriteHeader(http.StatusGatewayTimeout)
+			return nil
+
+		case publish.ClientError:
+			return m.Error
+
+		case publish.HttpResponseStart:
+			for k, v := range m.Headers {
+				for _, h := range v {
+					response.Header().Add(k, h)
+				}
+			}
+
+			response.WriteHeader(int(m.Status))
+
+		case publish.HttpResponseData:
+			if len(m.Data) > 0 {
+				_, err := response.Write(m.Data)
+				if err != nil {
+					return err
+				}
+			}
+
+			if m.Completed {
+				return nil
+			}
+		}
+	}
+
+	return nil
 }
 
 func splitEndpointAndPath(rawPath string) (string, string, bool) {

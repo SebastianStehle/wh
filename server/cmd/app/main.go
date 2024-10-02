@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -32,6 +33,7 @@ import (
 var (
 	authenticator  auth.Authenticator
 	authMiddleware auth.AuthMiddleware
+	buckets        publish.Buckets
 	config         *viper.Viper
 	handleApi      api.ApiHandler
 	handleHome     home.HomeHandler
@@ -58,7 +60,8 @@ func main() {
 
 	domain.SetDefaultConfig(config)
 
-	publisher = publish.NewPublisher(config)
+	buckets = publish.NewFileBucket(config)
+	publisher = publish.NewPublisher(config, logger, buckets)
 	authenticator = auth.NewAuthenticator(config)
 	authMiddleware = auth.NewAuthMiddleware(authenticator, logger)
 	handleHome = home.NewHomeHandler(publisher, authenticator, logger)
@@ -84,7 +87,7 @@ func main() {
 	http1Server := &http.Server{Handler: h2c.NewHandler(mixedHandler, http2Server), Addr: httpAddress}
 
 	go func() {
-		if err := http1Server.ListenAndServe(); err != http.ErrServerClosed {
+		if err := http1Server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			logger.Fatal("Shutting down the server.",
 				zap.Error(err),
 			)
@@ -104,7 +107,7 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	http1Server.Shutdown(ctx)
+	_ = http1Server.Shutdown(ctx)
 }
 
 func startHttp() *echo.Echo {
@@ -130,10 +133,10 @@ func startHttp() *echo.Echo {
 }
 
 func initGrpc() *grpc.Server {
-	server := grpc.NewServer()
+	serverG := grpc.NewServer()
 	service := tunnel.NewTunnelServer(publisher, logger)
 
-	generated.RegisterWebhookServiceServer(server, service)
+	generated.RegisterWebhookServiceServer(serverG, service)
 
-	return server
+	return serverG
 }

@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	generated "wh/domain/areas/tunnel/api/tunnel"
@@ -10,9 +11,23 @@ import (
 	"google.golang.org/grpc"
 )
 
+type Stream = grpc.BidiStreamingServer[generated.ClientMessage, generated.ServerMessage]
+
+type tunnelMessage[T any] struct {
+	request publish.TunneledRequest
+	message T
+}
+
+type complete struct {
+}
+
+type done struct {
+}
+
 type tunnelServer struct {
 	logger    *zap.Logger
 	publisher publish.Publisher
+	requests  map[string]publish.TunneledRequest
 	generated.UnimplementedWebhookServiceServer
 }
 
@@ -20,14 +35,127 @@ func NewTunnelServer(publisher publish.Publisher, logger *zap.Logger) generated.
 	return &tunnelServer{logger: logger, publisher: publisher}
 }
 
-func (s *tunnelServer) Subscribe(stream grpc.BidiStreamingServer[generated.WebhookMessage, generated.HttpRequest]) error {
+func (s *tunnelServer) Subscribe(stream Stream) error {
 	s.logger.Info("Tunnel opened by client.")
-	endpoint := ""
 
+	// We can only write to the stream from one go routing, therefore aggregate all messages in to one channel
+	ch := make(chan interface{})
+
+	endpoint := ""
 	defer func() {
-		if endpoint != "" {
-			s.publisher.Unsubscribe(endpoint)
+		s.logger.Info("Tunnel closes by client.")
+
+		// Ensure that the goroutine completes when we are done with the tunnel.
+		ch <- done{}
+
+		s.publisher.Unsubscribe(endpoint)
+	}()
+
+	go func() {
+		// There is no weak map yet, therefore ensure to clean it up.
+		requests := make(map[string]publish.TunneledRequest)
+
+		fmt.Printf("ABC")
+		for e := range ch {
+			switch m := e.(type) {
+			case done:
+				fmt.Printf("DONE")
+				return
+			case tunnelMessage[complete]:
+				fmt.Printf("DONE")
+				delete(requests, m.request.RequestId())
+
+			case publish.TunneledRequest:
+				fmt.Printf("S")
+				requests[m.RequestId()] = m
+
+				request := m.Request()
+				requestId := m.RequestId()
+
+				msg := &generated.ServerMessage{
+					TestMessageType: &generated.ServerMessage_RequestStart{
+						RequestStart: &generated.RequestStart{
+							RequestId: &requestId,
+							Endpoint:  &endpoint,
+							Path:      &request.Path,
+							Method:    &request.Method,
+							Headers:   toHeaders(request.Headers),
+						},
+					},
+				}
+
+				if err := stream.Send(msg); err != nil {
+					s.logger.Error("Could not send request start to client.",
+						zap.Error(err),
+					)
+
+					m.EmitClientError(err)
+					break
+				}
+
+				s.logger.Info("Forwarding request to client.",
+					zap.String("input.endpoint", endpoint),
+					zap.String("input.method", request.Method),
+					zap.String("input.path", request.Path),
+				)
+
+			case tunnelMessage[publish.HttpRequestData]:
+				fmt.Printf("\nFOO <%s>\n", m.request.RequestId())
+				requestId := m.request.RequestId()
+				msg := &generated.ServerMessage{
+					TestMessageType: &generated.ServerMessage_RequestData{
+						RequestData: &generated.RequestData{
+							RequestId: &requestId,
+							Data:      m.message.Data,
+							Completed: &m.message.Completed,
+						},
+					},
+				}
+
+				s.sendMessage(stream, m.request, msg)
+
+			case generated.ResponseStart:
+				t, ok := requests[m.GetRequestId()]
+				if !ok {
+					s.logUnknownRequest(m.GetRequestId())
+					break
+				}
+
+				msg := publish.HttpResponseStart{
+					Headers: fromHeaders(m.GetHeaders()),
+					Status:  m.GetStatus(),
+				}
+
+				t.EmitResponse(msg)
+
+			case generated.ResponseData:
+				t, ok := requests[m.GetRequestId()]
+				if !ok {
+					s.logUnknownRequest(m.GetRequestId())
+					break
+				}
+
+				msg := publish.HttpResponseData{
+					Data:      m.GetData(),
+					Completed: m.GetCompleted(),
+				}
+
+				t.EmitResponseData(msg)
+
+			case generated.TransportError:
+				t, ok := requests[m.GetRequestId()]
+				if !ok {
+					s.logUnknownRequest(m.GetRequestId())
+					break
+				}
+
+				t.EmitClientError(errors.New(m.GetError()))
+			default:
+				fmt.Printf("INVALID %T\n", m)
+			}
+
 		}
+		fmt.Printf("DEF")
 	}()
 
 	for {
@@ -46,64 +174,75 @@ func (s *tunnelServer) Subscribe(stream grpc.BidiStreamingServer[generated.Webho
 
 		subscribeMessage := message.GetSubscribe()
 		if subscribeMessage != nil {
-			var newEndpoint = subscribeMessage.GetEndpoint()
-			if newEndpoint == endpoint {
-				continue
+			if len(endpoint) > 0 {
+				return fmt.Errorf("you can only subscribe once. Current endpoint %s", endpoint)
 			}
 
-			if endpoint != "" {
-				s.publisher.Unsubscribe(endpoint)
-			}
+			endpoint = subscribeMessage.GetEndpoint()
 
-			endpoint = newEndpoint
+			if err := s.publisher.Subscribe(endpoint, func(t publish.TunneledRequest) {
+				ch <- t
+				fmt.Printf("REQUEST STARTED\n")
+				go func() {
+					defer func() {
+						ch <- tunnelMessage[complete]{request: t}
+					}()
 
-			if endpoint != "" {
-				s.publisher.Subscribe(endpoint, func(requestId string, request publish.HttpRequest) {
-					s.logger.Info("Forwarding request to client.",
-						zap.String("input.endpoint", endpoint),
-						zap.String("input.method", request.Method),
-						zap.String("input.path", request.Path),
-					)
-
-					requestMessage := &generated.HttpRequest{
-						RequestId: &requestId,
-						Endpoint:  &endpoint,
-						Path:      &request.Path,
-						Method:    &request.Method,
-						Headers:   toHeaders(request.Headers),
-						Body:      request.Body,
+					for e := range t.Events() {
+						switch m := e.(type) {
+						case publish.HttpRequestData:
+							fmt.Printf("INVALID2 %T\n", m)
+							ch <- tunnelMessage[publish.HttpRequestData]{request: t, message: m}
+						default:
+							fmt.Printf("INVALID %T\n", m)
+						}
 					}
-
-					if err := stream.Send(requestMessage); err != nil {
-						s.logger.Error("Could not send request to client.",
-							zap.Error(err),
-						)
-					}
-				})
+					fmt.Printf("REQUEST CLOSED\n")
+				}()
+			}); err != nil {
+				return err
 			}
+			continue
 		}
 
-		responseMessage := message.GetResponse()
-		if responseMessage != nil && endpoint != "" {
-			response := publish.HttpResponse{
-				Headers: fromHeaders(responseMessage.GetHeaders()),
-				Status:  responseMessage.GetStatus(),
-				Body:    responseMessage.GetBody(),
-			}
-
-			s.publisher.OnResponse(endpoint, *responseMessage.RequestId, response)
+		if len(endpoint) == 0 {
+			return fmt.Errorf("not subscribed yet")
 		}
 
-		errorMessage := message.GetError()
-		if errorMessage != nil && endpoint != "" {
-			err := fmt.Errorf("error from CLI: %s", *errorMessage.Error)
+		responseStart := message.GetResponseStart()
+		if responseStart != nil {
+			ch <- *responseStart
+		}
 
-			s.publisher.OnError(endpoint, *errorMessage.RequestId, err)
+		responseChunk := message.GetResponseData()
+		if responseChunk != nil {
+			ch <- *responseChunk
+		}
+
+		clientError := message.GetError()
+		if clientError != nil {
+			ch <- *clientError
 		}
 	}
 }
 
-func toHeaders(source map[string]([]string)) map[string]*generated.HttpHeaderValues {
+func (s *tunnelServer) logUnknownRequest(requestId string) {
+	s.logger.Error("Cannot find request.",
+		zap.String("requestId", requestId),
+	)
+}
+
+func (s *tunnelServer) sendMessage(stream Stream, t publish.TunneledRequest, msg *generated.ServerMessage) {
+	if err := stream.Send(msg); err != nil {
+		s.logger.Error("Could not send request start to client.",
+			zap.Error(err),
+		)
+
+		t.EmitClientError(err)
+	}
+}
+
+func toHeaders(source map[string][]string) map[string]*generated.HttpHeaderValues {
 	headers := make(map[string]*generated.HttpHeaderValues)
 
 	for k, v := range source {
@@ -113,8 +252,8 @@ func toHeaders(source map[string]([]string)) map[string]*generated.HttpHeaderVal
 	return headers
 }
 
-func fromHeaders(source map[string]*generated.HttpHeaderValues) map[string]([]string) {
-	headers := make(map[string]([]string))
+func fromHeaders(source map[string]*generated.HttpHeaderValues) map[string][]string {
+	headers := make(map[string][]string)
 
 	for k, v := range source {
 		headers[k] = v.Values

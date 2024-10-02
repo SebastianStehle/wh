@@ -1,6 +1,8 @@
 package tunnel
 
-func formatUrl(baseUrl string, paths ...string) string {
+import "strings"
+
+func combineUrl(baseUrl string, paths ...string) string {
 	url := strings.TrimSuffix(baseUrl, "/")
 
 	for _, path := range paths {
