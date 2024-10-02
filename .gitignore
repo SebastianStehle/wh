@@ -30,3 +30,5 @@ public/css
 node_modules
 
 tmp/g
+
+request/data

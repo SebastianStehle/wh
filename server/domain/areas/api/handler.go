@@ -59,10 +59,7 @@ func (a apiHandler) Index(c echo.Context) error {
 		Headers: request.Header,
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request().Context(), 4*time.Hour)
-	defer cancel()
-
-	tunneled, err := a.publisher.ForwardRequest(endpoint, forwardedRequest, ctx)
+	tunneled, err := a.publisher.ForwardRequest(endpoint, forwardedRequest)
 	if errors.Is(err, publish.ErrNotRegistered) {
 		response.WriteHeader(http.StatusServiceUnavailable)
 		return nil
@@ -70,44 +67,16 @@ func (a apiHandler) Index(c echo.Context) error {
 		return err
 	}
 
-	done := make(chan error)
-	tunneled.OnComplete(func() {
-		done <- nil
-	})
-
-	tunneled.OnError(func(msg publish.HttpError) {
-		if msg.Timeout {
-			response.WriteHeader(http.StatusGatewayTimeout)
-		} else if msg.Error != nil {
-			done <- msg.Error
-		}
-	})
-
-	tunneled.OnResponseStart(func(msg publish.HttpResponseStart) {
-		for k, v := range msg.Headers {
-			for _, h := range v {
-				response.Header().Add(k, h)
-			}
-		}
-
-		response.WriteHeader(int(msg.Status))
-	})
-
-	tunneled.OnResponseData(func(msg publish.HttpResponseData) {
-		if len(msg.Data) > 0 {
-			_, err := response.Write(msg.Data)
-			if err != nil {
-				done <- err
-			}
-		}
-	})
+	ctx, cancel := context.WithTimeout(c.Request().Context(), 4*time.Hour)
+	defer cancel()
+	defer tunneled.Cancel()
 
 	body := request.Body
 	for {
 		buffer := make([]byte, 4096)
 		n, err := body.Read(buffer)
 		if err != nil && err != io.EOF {
-			tunneled.EmitError(err, true)
+			tunneled.EmitInitiatorError(err)
 			return err
 		}
 
@@ -119,9 +88,38 @@ func (a apiHandler) Index(c echo.Context) error {
 		}
 	}
 
-	select {
-	case err := <-done:
-		return err
+	for {
+		select {
+		case <-ctx.Done():
+			response.WriteHeader(http.StatusGatewayTimeout)
+			return nil
+		case <-tunneled.InitiatorComplete:
+			return nil
+		case msg := <-tunneled.ListenerError:
+			if msg.Timeout {
+				response.WriteHeader(http.StatusGatewayTimeout)
+				return nil
+			} else {
+				return msg.Error
+			}
+		case msg := <-tunneled.ResponseStart:
+			for k, v := range msg.Headers {
+				for _, h := range v {
+					response.Header().Add(k, h)
+				}
+			}
+
+			response.WriteHeader(int(msg.Status))
+
+		case msg := <-tunneled.ResponseData:
+			if len(msg.Data) > 0 {
+				_, err := response.Write(msg.Data)
+				if err != nil {
+					tunneled.EmitInitiatorError(err)
+					return err
+				}
+			}
+		}
 	}
 }
 

@@ -1,7 +1,6 @@
 package publish
 
 import (
-	"context"
 	"errors"
 	"sync"
 
@@ -21,7 +20,7 @@ type publisher struct {
 type ResponseEvent struct {
 	error   error
 	started *HttpResponseStart
-	chunk   *HttpRequestData
+	chunk   *HttpData
 }
 
 // ErrAlreadyRegistered There is already a request handler.
@@ -35,7 +34,7 @@ type Publisher interface {
 
 	Unsubscribe(endpoint string)
 
-	ForwardRequest(endpoint string, request HttpRequestStart, ctx context.Context) (*TunneledRequest, error)
+	ForwardRequest(endpoint string, request HttpRequestStart) (*TunneledRequest, error)
 
 	GetEntries(etag int64) ([]LogEntry, int64)
 }
@@ -77,7 +76,7 @@ func (p *publisher) Subscribe(endpoint string, handler func(request *TunneledReq
 	return nil
 }
 
-func (p *publisher) ForwardRequest(endpoint string, request HttpRequestStart, ctx context.Context) (*TunneledRequest, error) {
+func (p *publisher) ForwardRequest(endpoint string, request HttpRequestStart) (*TunneledRequest, error) {
 	requestId := uuid.New().String()
 
 	// Event if nobody is listening, we would like to log the event.
@@ -93,7 +92,7 @@ func (p *publisher) ForwardRequest(endpoint string, request HttpRequestStart, ct
 	handler(tunneledRequest)
 
 	// Start the actual request in another go-routine
-	tunneledRequest.Start(ctx)
+	tunneledRequest.Start()
 
 	return tunneledRequest, nil
 }

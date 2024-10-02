@@ -18,12 +18,6 @@ type tunnelMessage[T any] struct {
 	msg     T
 }
 
-type complete struct {
-}
-
-type done struct {
-}
-
 type tunnelServer struct {
 	logger    *zap.Logger
 	publisher publish.Publisher
@@ -39,37 +33,41 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 	s.logger.Info("Tunnel opened by client.")
 
 	// We can only write to the stream from one go routing, therefore aggregate all messages in to one channel
-	ch := make(chan interface{})
+	done := make(chan bool)
+	clientError := make(chan *generated.TransportError)
+	complete := make(chan tunnelMessage[publish.Complete])
+	requestData := make(chan tunnelMessage[publish.HttpData])
+	requestStart := make(chan *publish.TunneledRequest)
+	responseData := make(chan *generated.ResponseData)
+	responseStart := make(chan *generated.ResponseStart)
+	serverError := make(chan tunnelMessage[publish.HttpError])
 
 	endpoint := ""
 	defer func() {
 		s.logger.Info("Tunnel closes by client.")
 
 		// Ensure that the goroutine completes when we are done with the tunnel.
-		ch <- done{}
+		done <- true
 
 		s.publisher.Unsubscribe(endpoint)
 	}()
 
 	go func() {
 		// There is no weak map yet, therefore ensure to clean it up.
-		requests := make(map[string]publish.TunneledRequest)
+		requests := make(map[string]*publish.TunneledRequest)
 
-		for e := range ch {
-			switch m := e.(type) {
-			case done:
+		for {
+			select {
+			case <-done:
 				return
-			case tunnelMessage[complete]:
-				delete(requests, m.request.RequestId)
+			case msg := <-requestStart:
+				requests[msg.RequestId] = msg
+				request := msg.Request
 
-			case publish.TunneledRequest:
-				requests[m.RequestId] = m
-				request := m.Request
-
-				msg := &generated.ServerMessage{
+				m := &generated.ServerMessage{
 					TestMessageType: &generated.ServerMessage_RequestStart{
 						RequestStart: &generated.RequestStart{
-							RequestId: &m.RequestId,
+							RequestId: &msg.RequestId,
 							Endpoint:  &endpoint,
 							Path:      &request.Path,
 							Method:    &request.Method,
@@ -78,12 +76,12 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 					},
 				}
 
-				if err := stream.Send(msg); err != nil {
+				if err := stream.Send(m); err != nil {
 					s.logger.Error("Could not send request start to client.",
 						zap.Error(err),
 					)
 
-					m.EmitError(err, false)
+					msg.EmitListenerError(err, false)
 					break
 				}
 
@@ -93,53 +91,47 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 					zap.String("input.path", request.Path),
 				)
 
-			case tunnelMessage[publish.HttpRequestData]:
-				msg := &generated.ServerMessage{
+			case msg := <-requestData:
+				m := &generated.ServerMessage{
 					TestMessageType: &generated.ServerMessage_RequestData{
 						RequestData: &generated.RequestData{
-							RequestId: &m.request.RequestId,
-							Data:      m.msg.Data,
-							Completed: &m.msg.Completed,
+							RequestId: &msg.request.RequestId,
+							Data:      msg.msg.Data,
+							Completed: &msg.msg.Completed,
 						},
 					},
 				}
 
-				s.sendMessage(stream, m.request, msg)
+				s.sendMessage(stream, msg.request, m)
 
-			case generated.ResponseStart:
-				t, ok := requests[m.GetRequestId()]
+			case msg := <-responseStart:
+				t, ok := requests[msg.GetRequestId()]
 				if !ok {
-					s.logUnknownRequest(m.GetRequestId())
+					s.logUnknownRequest(msg.GetRequestId())
 					break
 				}
 
-				msg := publish.HttpResponseStart{
-					Headers: fromHeaders(m.GetHeaders()),
-					Status:  m.GetStatus(),
-				}
+				t.EmitResponse(fromHeaders(msg.GetHeaders()), msg.GetStatus())
 
-				t.EmitResponse(msg)
-
-			case generated.ResponseData:
-				t, ok := requests[m.GetRequestId()]
+			case msg := <-responseData:
+				t, ok := requests[msg.GetRequestId()]
 				if !ok {
-					s.logUnknownRequest(m.GetRequestId())
+					s.logUnknownRequest(msg.GetRequestId())
 					break
 				}
 
-				t.EmitResponseData(m.GetData(), m.GetCompleted())
+				t.EmitResponseData(msg.GetData(), msg.GetCompleted())
 
-			case generated.TransportError:
-				t, ok := requests[m.GetRequestId()]
+			case msg := <-clientError:
+				t, ok := requests[msg.GetRequestId()]
 				if !ok {
-					s.logUnknownRequest(m.GetRequestId())
+					s.logUnknownRequest(msg.GetRequestId())
 					break
 				}
 
-				t.EmitError(errors.New(m.GetError()), false)
+				t.EmitInitiatorError(errors.New(msg.GetError()))
 			}
 		}
-		fmt.Printf("DEF")
 	}()
 
 	for {
@@ -164,21 +156,22 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 
 			endpoint = subscribeMessage.GetEndpoint()
 
-			if err := s.publisher.Subscribe(endpoint, func(t *publish.TunneledRequest) {
-				ch <- t
-				t.OnRequestData(func(msg publish.HttpRequestData) {
-					ch <- tunnelMessage[publish.HttpRequestData]{request: t, msg: msg}
-				})
+			if err := s.publisher.Subscribe(endpoint, func(tunneled *publish.TunneledRequest) {
+				requestStart <- tunneled
+				go func() {
+					for {
+						select {
+						case <-tunneled.ListenerComplete:
+							complete <- tunnelMessage[publish.Complete]{request: tunneled}
 
-				t.OnComplete(func() {
-					ch <- tunnelMessage[complete]{request: t}
-				})
+						case msg := <-tunneled.RequestData:
+							requestData <- tunnelMessage[publish.HttpData]{request: tunneled, msg: msg}
 
-				t.OnError(func(msg publish.HttpError) {
-					if msg.Server {
-						ch <- tunnelMessage[publish.HttpError]{request: t, msg: msg}
+						case msg := <-tunneled.InitiatorError:
+							serverError <- tunnelMessage[publish.HttpError]{request: tunneled, msg: msg}
+						}
 					}
-				})
+				}()
 			}); err != nil {
 				return err
 			}
@@ -189,19 +182,19 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 			return fmt.Errorf("not subscribed yet")
 		}
 
-		responseStart := message.GetResponseStart()
-		if responseStart != nil {
-			ch <- *responseStart
+		start := message.GetResponseStart()
+		if start != nil {
+			responseStart <- start
 		}
 
-		responseChunk := message.GetResponseData()
-		if responseChunk != nil {
-			ch <- *responseChunk
+		data := message.GetResponseData()
+		if data != nil {
+			responseData <- data
 		}
 
-		clientError := message.GetError()
-		if clientError != nil {
-			ch <- *clientError
+		e := message.GetError()
+		if e != nil {
+			clientError <- e
 		}
 	}
 }
@@ -218,7 +211,7 @@ func (s *tunnelServer) sendMessage(stream Stream, t *publish.TunneledRequest, ms
 			zap.Error(err),
 		)
 
-		t.EmitError(err, false)
+		t.EmitListenerError(err, false)
 	}
 }
 

@@ -15,14 +15,6 @@ type HttpRequestStart struct {
 	Headers http.Header
 }
 
-type HttpRequestData struct {
-	// The chunk
-	Data []byte
-
-	// Indicated if the request is complete
-	Completed bool
-}
-
 type HttpResponseStart struct {
 	// The response headers.
 	Headers http.Header
@@ -31,11 +23,11 @@ type HttpResponseStart struct {
 	Status int32
 }
 
-type HttpResponseData struct {
+type HttpData struct {
 	// The chunk
 	Data []byte
 
-	// Indicated if the response is complete
+	// Indicated if the request is complete
 	Completed bool
 }
 
@@ -45,7 +37,6 @@ type HttpError struct {
 
 	// Indicate if the error is a timeout
 	Timeout bool
-
-	// Indicate if the error is from the server
-	Server bool
 }
+
+type Complete struct{}
