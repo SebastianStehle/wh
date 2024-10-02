@@ -120,6 +120,9 @@ for example:
 					} else if m.status != "" {
 						printStatus(m.request.method, m.request.path, m.status)
 					}
+
+				default:
+					fmt.Printf("INVALID %T", e)
 				}
 			}
 		}()
@@ -138,7 +141,6 @@ for example:
 
 			requestData := serverMessage.GetRequestData()
 			if requestData != nil {
-				fmt.Printf("DATA")
 				ch <- *requestData
 			}
 

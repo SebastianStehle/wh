@@ -1,9 +1,9 @@
 package publish
 
 import (
+	"context"
 	"errors"
 	"sync"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/spf13/viper"
@@ -11,7 +11,7 @@ import (
 )
 
 type publisher struct {
-	endpoints map[string]func(TunneledRequest)
+	endpoints map[string]func(*TunneledRequest)
 	buckets   Buckets
 	lockObj   sync.RWMutex
 	log       Log
@@ -31,11 +31,11 @@ var ErrAlreadyRegistered = errors.New("AlreadyRegistered")
 var ErrNotRegistered = errors.New("NotRegistered")
 
 type Publisher interface {
-	Subscribe(endpoint string, handler func(TunneledRequest)) error
+	Subscribe(endpoint string, handler func(*TunneledRequest)) error
 
 	Unsubscribe(endpoint string)
 
-	ForwardRequest(endpoint string, timeout time.Duration, request HttpRequestStart) (TunneledRequest, error)
+	ForwardRequest(endpoint string, request HttpRequestStart, ctx context.Context) (*TunneledRequest, error)
 
 	GetEntries(etag int64) ([]LogEntry, int64)
 }
@@ -47,7 +47,7 @@ func NewPublisher(config *viper.Viper, logger *zap.Logger, buckets Buckets) Publ
 	log := NewLog(maxSize, maxEntries)
 
 	return &publisher{
-		endpoints: make(map[string]func(TunneledRequest)),
+		endpoints: make(map[string]func(*TunneledRequest)),
 		buckets:   buckets,
 		lockObj:   sync.RWMutex{},
 		log:       log,
@@ -67,7 +67,7 @@ func (p *publisher) Unsubscribe(endpoint string) {
 	delete(p.endpoints, endpoint)
 }
 
-func (p *publisher) Subscribe(endpoint string, handler func(request TunneledRequest)) error {
+func (p *publisher) Subscribe(endpoint string, handler func(request *TunneledRequest)) error {
 	registration, ok := p.endpoints[endpoint]
 	if ok || registration != nil {
 		return ErrAlreadyRegistered
@@ -77,7 +77,7 @@ func (p *publisher) Subscribe(endpoint string, handler func(request TunneledRequ
 	return nil
 }
 
-func (p *publisher) ForwardRequest(endpoint string, timeout time.Duration, request HttpRequestStart) (TunneledRequest, error) {
+func (p *publisher) ForwardRequest(endpoint string, request HttpRequestStart, ctx context.Context) (*TunneledRequest, error) {
 	requestId := uuid.New().String()
 
 	// Event if nobody is listening, we would like to log the event.
@@ -88,16 +88,17 @@ func (p *publisher) ForwardRequest(endpoint string, timeout time.Duration, reque
 		return nil, err
 	}
 
-	tunneledRequest := NewTunneledRequest(p.buckets, p.logger, p.log, endpoint, timeout, requestId, request)
+	tunneledRequest := NewTunneledRequest(p.buckets, p.logger, p.log, endpoint, requestId, request)
 	// Publish the request first, so that we can receive events.
 	handler(tunneledRequest)
 
 	// Start the actual request in another go-routine
-	tunneledRequest.Start()
+	tunneledRequest.Start(ctx)
+
 	return tunneledRequest, nil
 }
 
-func (p *publisher) getHandler(endpoint string) (func(TunneledRequest), error) {
+func (p *publisher) getHandler(endpoint string) (func(*TunneledRequest), error) {
 	// Ensure that only a single thread can access the thread
 	p.lockObj.Lock()
 	defer p.lockObj.Unlock()

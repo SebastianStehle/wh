@@ -1,121 +1,101 @@
 package publish
 
 import (
-	"fmt"
+	"context"
 	"io"
-	"time"
 
 	"go.uber.org/zap"
 )
 
-type tunneledRequest struct {
+type TunneledRequest struct {
 	buckets         Buckets
-	endpoint        string
+	Endpoint        string
 	log             Log
 	logger          *zap.Logger
 	internalChannel chan interface{}
-	request         HttpRequestStart
-	requestId       string
+	onRequestData   []func(HttpRequestData)
+	onResponseStart []func(HttpResponseStart)
+	onResponseData  []func(HttpResponseData)
+	onError         []func(HttpError)
+	onComplete      []func()
+	Request         HttpRequestStart
+	RequestId       string
 	requestWriter   io.WriteCloser
 	responseWriter  io.WriteCloser
-	state           state
-	timeout         time.Duration
-	publicChannel   chan interface{}
+	Status          status
 }
 
-type state = int
+type status = int
 
 const (
-	StateRequestStarted state = iota
-	StateRequestCompleted
-	StateResponseStarted
-	StateResponseCompleted
-	StateFailed
-	StateClosed
+	StatusRequestStarted status = iota
+	StatusRequestCompleted
+	StatusResponseStarted
+	StatusDone
 )
 
-type TunneledRequest interface {
-	Request() HttpRequestStart
-
-	RequestId() string
-
-	Events() chan interface{}
-
-	EmitRequestData(data []byte, isComplete bool)
-
-	EmitResponse(message HttpResponseStart)
-
-	EmitResponseData(message HttpResponseData)
-
-	EmitClientError(error error)
-
-	Start()
-
-	Close()
-}
-
-func NewTunneledRequest(buckets Buckets, logger *zap.Logger, log Log, endpoint string, timeout time.Duration, requestId string, request HttpRequestStart) TunneledRequest {
-	return &tunneledRequest{
-		endpoint:        endpoint,
+func NewTunneledRequest(buckets Buckets, logger *zap.Logger, log Log, endpoint string, requestId string, request HttpRequestStart) *TunneledRequest {
+	return &TunneledRequest{
+		Endpoint:        endpoint,
 		buckets:         buckets,
 		internalChannel: make(chan interface{}),
 		log:             log,
 		logger:          logger,
-		publicChannel:   make(chan interface{}, 1),
-		requestId:       requestId,
-		request:         request,
-		state:           StateRequestStarted,
-		timeout:         timeout,
+		RequestId:       requestId,
+		Request:         request,
+		Status:          StatusRequestStarted,
 	}
 }
 
-func (t tunneledRequest) Request() HttpRequestStart {
-	return t.request
-}
-
-func (t tunneledRequest) RequestId() string {
-	return t.requestId
-}
-
-func (t tunneledRequest) Events() chan interface{} {
-	return t.publicChannel
-}
-
-func (t tunneledRequest) Start() {
-	t.log.LogRequest(t.requestId, t.endpoint, t.request)
-
-	timer := time.NewTimer(t.timeout)
-
-	fmt.Printf("FOOBAR")
+func (t *TunneledRequest) Start(ctx context.Context) {
+	t.log.LogRequest(t.RequestId, t.Endpoint, t.Request)
 	go func() {
-		t.publicChannel <- t.request
 		for {
 			select {
-			case <-timer.C:
-				if t.state == StateFailed || t.state == StateClosed {
+			case <-ctx.Done():
+				if t.Status != StatusDone {
 					return
 				}
-				t.log.LogTimeout(t.requestId)
-				t.state = StateFailed
 
-				t.publicChannel <- &Timeout{}
-				t.Close()
+				t.error(HttpError{Timeout: true})
+				t.complete()
+
+				// Log last, because the actual request is more important.
+				t.log.LogTimeout(t.RequestId)
 				return
 
-			case m := <-t.internalChannel:
-				switch r := m.(type) {
+			case input := <-t.internalChannel:
+				switch msg := input.(type) {
+				case HttpError:
+					if t.Status != StatusDone || msg.Error == nil {
+						return
+					}
+
+					t.error(msg)
+					t.complete()
+
+					// Log last, because the actual request is more important.
+					t.log.LogError(t.RequestId, msg.Error)
+
 				case HttpRequestData:
-					if t.state != StateRequestStarted {
+					if t.Status != StatusRequestStarted {
 						break
 					}
 
-					// Write to output channel first, because the dump is not that important.
-					t.publicChannel <- r
+					// Set the status first, in case something goes wrong.
+					if msg.Completed {
+						t.Status = StatusRequestCompleted
+					}
 
-					data := r.Data
+					// Write to output channel first, because the dump is not that important.
+					for _, handler := range t.onRequestData {
+						handler(msg)
+					}
+
+					data := msg.Data
 					if len(data) > 0 {
 						if t.requestWriter == nil {
-							writer, err := t.buckets.OpenRequestWriter(t.requestId)
+							writer, err := t.buckets.OpenRequestWriter(t.RequestId)
 							if err != nil {
 								t.logger.Error("Failed to write to request dump", zap.Error(err))
 								break
@@ -131,9 +111,7 @@ func (t tunneledRequest) Start() {
 						}
 					}
 
-					if r.Completed {
-						t.state = StateRequestCompleted
-
+					if msg.Completed {
 						if t.requestWriter != nil {
 							err := t.requestWriter.Close()
 							t.requestWriter = nil
@@ -144,26 +122,36 @@ func (t tunneledRequest) Start() {
 					}
 
 				case HttpResponseStart:
-					if t.state != StateRequestCompleted {
+					if t.Status != StatusDone {
 						break
 					}
 
-					t.state = StateResponseStarted
-					t.publicChannel <- r
+					// Set the status first, in case something goes wrong.
+					t.Status = StatusResponseStarted
+
+					// Write to output delegates first, because the dump is not that important.
+					for _, handler := range t.onResponseStart {
+						handler(msg)
+					}
 
 				case HttpResponseData:
-					if t.state != StateResponseStarted {
+					if t.Status != StatusResponseStarted {
 						break
 					}
 
-					// Write to output channel first, because the dump is not that important.
-					t.publicChannel <- r
+					if msg.Completed {
+						t.complete()
+					}
 
-					data := r.Data
+					// Write to output delegates first, because the dump is not that important.
+					for _, handler := range t.onResponseData {
+						handler(msg)
+					}
 
+					data := msg.Data
 					if len(data) > 0 {
 						if t.responseWriter == nil {
-							writer, err := t.buckets.OpenResponseWriter(t.requestId)
+							writer, err := t.buckets.OpenResponseWriter(t.RequestId)
 							if err != nil {
 								t.logger.Error("Failed to write to response dump", zap.Error(err))
 								break
@@ -179,9 +167,7 @@ func (t tunneledRequest) Start() {
 						}
 					}
 
-					if r.Completed {
-						t.state = StateResponseCompleted
-
+					if msg.Completed {
 						if t.responseWriter != nil {
 							err := t.responseWriter.Close()
 							t.responseWriter = nil
@@ -189,45 +175,83 @@ func (t tunneledRequest) Start() {
 								t.logger.Error("Failed to close to response dump", zap.Error(err))
 								break
 							}
-
 						}
 						break
 					}
-				default:
-					fmt.Printf("INVALID %T\n", m)
 				}
 			}
 		}
 	}()
 }
 
-func (t tunneledRequest) EmitRequestData(data []byte, completed bool) {
+func (t *TunneledRequest) OnRequestData(handler func(HttpRequestData)) {
+	t.onRequestData = append(t.onRequestData, handler)
+}
+
+func (t *TunneledRequest) OnResponseStart(handler func(HttpResponseStart)) {
+	t.onResponseStart = append(t.onResponseStart, handler)
+}
+
+func (t *TunneledRequest) OnResponseData(handler func(HttpResponseData)) {
+	t.onResponseData = append(t.onResponseData, handler)
+}
+
+func (t *TunneledRequest) OnError(handler func(HttpError)) {
+	t.onError = append(t.onError, handler)
+}
+
+func (t *TunneledRequest) OnComplete(handler func()) {
+	t.onComplete = append(t.onComplete, handler)
+}
+
+func (t *TunneledRequest) EmitRequestData(data []byte, completed bool) {
 	msg := HttpRequestData{Data: data, Completed: completed}
 	t.internalChannel <- msg
 }
 
-func (t tunneledRequest) EmitResponse(message HttpResponseStart) {
+func (t *TunneledRequest) EmitResponse(message HttpResponseStart) {
 	t.internalChannel <- message
 }
 
-func (t tunneledRequest) EmitResponseData(message HttpResponseData) {
-	t.internalChannel <- message
+func (t *TunneledRequest) EmitResponseData(data []byte, completed bool) {
+	msg := HttpResponseData{Data: data, Completed: completed}
+	t.internalChannel <- msg
 }
 
-func (t tunneledRequest) EmitClientError(error error) {
-	t.internalChannel <- ClientError{Error: error}
+func (t *TunneledRequest) EmitError(error error, server bool) {
+	msg := HttpError{Error: error, Server: server}
+	t.internalChannel <- msg
 }
 
-func (t tunneledRequest) Close() {
-	if t.responseWriter != nil {
-		_ = t.responseWriter.Close()
-		t.responseWriter = nil
+func (t *TunneledRequest) error(msg HttpError) {
+	// Set the status first, in case something goes wrong.
+	t.Status = StatusDone
+
+	for _, handler := range t.onError {
+		handler(msg)
+	}
+}
+
+func (t *TunneledRequest) complete() {
+	// Set the status first, in case something goes wrong.
+	t.Status = StatusDone
+
+	for _, handler := range t.onComplete {
+		handler()
 	}
 
-	if t.requestWriter != nil {
-		_ = t.requestWriter.Close()
-		t.requestWriter = nil
-	}
+	defer func() {
+		if t.responseWriter != nil {
+			_ = t.responseWriter.Close()
+			t.responseWriter = nil
+		}
 
-	t.state = StateClosed
+		if t.requestWriter != nil {
+			_ = t.requestWriter.Close()
+			t.requestWriter = nil
+		}
+	}()
+}
+
+func (t *TunneledRequest) closeInternal() {
 }

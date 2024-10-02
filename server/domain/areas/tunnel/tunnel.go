@@ -14,8 +14,8 @@ import (
 type Stream = grpc.BidiStreamingServer[generated.ClientMessage, generated.ServerMessage]
 
 type tunnelMessage[T any] struct {
-	request publish.TunneledRequest
-	message T
+	request *publish.TunneledRequest
+	msg     T
 }
 
 type complete struct {
@@ -55,27 +55,21 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 		// There is no weak map yet, therefore ensure to clean it up.
 		requests := make(map[string]publish.TunneledRequest)
 
-		fmt.Printf("ABC")
 		for e := range ch {
 			switch m := e.(type) {
 			case done:
-				fmt.Printf("DONE")
 				return
 			case tunnelMessage[complete]:
-				fmt.Printf("DONE")
-				delete(requests, m.request.RequestId())
+				delete(requests, m.request.RequestId)
 
 			case publish.TunneledRequest:
-				fmt.Printf("S")
-				requests[m.RequestId()] = m
-
-				request := m.Request()
-				requestId := m.RequestId()
+				requests[m.RequestId] = m
+				request := m.Request
 
 				msg := &generated.ServerMessage{
 					TestMessageType: &generated.ServerMessage_RequestStart{
 						RequestStart: &generated.RequestStart{
-							RequestId: &requestId,
+							RequestId: &m.RequestId,
 							Endpoint:  &endpoint,
 							Path:      &request.Path,
 							Method:    &request.Method,
@@ -89,7 +83,7 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 						zap.Error(err),
 					)
 
-					m.EmitClientError(err)
+					m.EmitError(err, false)
 					break
 				}
 
@@ -100,14 +94,12 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 				)
 
 			case tunnelMessage[publish.HttpRequestData]:
-				fmt.Printf("\nFOO <%s>\n", m.request.RequestId())
-				requestId := m.request.RequestId()
 				msg := &generated.ServerMessage{
 					TestMessageType: &generated.ServerMessage_RequestData{
 						RequestData: &generated.RequestData{
-							RequestId: &requestId,
-							Data:      m.message.Data,
-							Completed: &m.message.Completed,
+							RequestId: &m.request.RequestId,
+							Data:      m.msg.Data,
+							Completed: &m.msg.Completed,
 						},
 					},
 				}
@@ -135,12 +127,7 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 					break
 				}
 
-				msg := publish.HttpResponseData{
-					Data:      m.GetData(),
-					Completed: m.GetCompleted(),
-				}
-
-				t.EmitResponseData(msg)
+				t.EmitResponseData(m.GetData(), m.GetCompleted())
 
 			case generated.TransportError:
 				t, ok := requests[m.GetRequestId()]
@@ -149,11 +136,8 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 					break
 				}
 
-				t.EmitClientError(errors.New(m.GetError()))
-			default:
-				fmt.Printf("INVALID %T\n", m)
+				t.EmitError(errors.New(m.GetError()), false)
 			}
-
 		}
 		fmt.Printf("DEF")
 	}()
@@ -180,25 +164,21 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 
 			endpoint = subscribeMessage.GetEndpoint()
 
-			if err := s.publisher.Subscribe(endpoint, func(t publish.TunneledRequest) {
+			if err := s.publisher.Subscribe(endpoint, func(t *publish.TunneledRequest) {
 				ch <- t
-				fmt.Printf("REQUEST STARTED\n")
-				go func() {
-					defer func() {
-						ch <- tunnelMessage[complete]{request: t}
-					}()
+				t.OnRequestData(func(msg publish.HttpRequestData) {
+					ch <- tunnelMessage[publish.HttpRequestData]{request: t, msg: msg}
+				})
 
-					for e := range t.Events() {
-						switch m := e.(type) {
-						case publish.HttpRequestData:
-							fmt.Printf("INVALID2 %T\n", m)
-							ch <- tunnelMessage[publish.HttpRequestData]{request: t, message: m}
-						default:
-							fmt.Printf("INVALID %T\n", m)
-						}
+				t.OnComplete(func() {
+					ch <- tunnelMessage[complete]{request: t}
+				})
+
+				t.OnError(func(msg publish.HttpError) {
+					if msg.Server {
+						ch <- tunnelMessage[publish.HttpError]{request: t, msg: msg}
 					}
-					fmt.Printf("REQUEST CLOSED\n")
-				}()
+				})
 			}); err != nil {
 				return err
 			}
@@ -232,13 +212,13 @@ func (s *tunnelServer) logUnknownRequest(requestId string) {
 	)
 }
 
-func (s *tunnelServer) sendMessage(stream Stream, t publish.TunneledRequest, msg *generated.ServerMessage) {
+func (s *tunnelServer) sendMessage(stream Stream, t *publish.TunneledRequest, msg *generated.ServerMessage) {
 	if err := stream.Send(msg); err != nil {
 		s.logger.Error("Could not send request start to client.",
 			zap.Error(err),
 		)
 
-		t.EmitClientError(err)
+		t.EmitError(err, false)
 	}
 }
 

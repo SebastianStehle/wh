@@ -39,10 +39,13 @@ type HttpResponseData struct {
 	Completed bool
 }
 
-type ClientError struct {
+type HttpError struct {
 	// The client error
 	Error error
-}
 
-type Timeout struct {
+	// Indicate if the error is a timeout
+	Timeout bool
+
+	// Indicate if the error is from the server
+	Server bool
 }

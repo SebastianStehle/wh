@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -58,7 +59,10 @@ func (a apiHandler) Index(c echo.Context) error {
 		Headers: request.Header,
 	}
 
-	tunneled, err := a.publisher.ForwardRequest(endpoint, a.timeout, forwardedRequest)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), 4*time.Hour)
+	defer cancel()
+
+	tunneled, err := a.publisher.ForwardRequest(endpoint, forwardedRequest, ctx)
 	if errors.Is(err, publish.ErrNotRegistered) {
 		response.WriteHeader(http.StatusServiceUnavailable)
 		return nil
@@ -66,65 +70,59 @@ func (a apiHandler) Index(c echo.Context) error {
 		return err
 	}
 
-	defer func() {
-		tunneled.Close()
-	}()
+	done := make(chan error)
+	tunneled.OnComplete(func() {
+		done <- nil
+	})
 
-	ch := tunneled.Events()
+	tunneled.OnError(func(msg publish.HttpError) {
+		if msg.Timeout {
+			response.WriteHeader(http.StatusGatewayTimeout)
+		} else if msg.Error != nil {
+			done <- msg.Error
+		}
+	})
+
+	tunneled.OnResponseStart(func(msg publish.HttpResponseStart) {
+		for k, v := range msg.Headers {
+			for _, h := range v {
+				response.Header().Add(k, h)
+			}
+		}
+
+		response.WriteHeader(int(msg.Status))
+	})
+
+	tunneled.OnResponseData(func(msg publish.HttpResponseData) {
+		if len(msg.Data) > 0 {
+			_, err := response.Write(msg.Data)
+			if err != nil {
+				done <- err
+			}
+		}
+	})
+
+	body := request.Body
 	for {
-		select {
-		case e := <-tunneled.Events():
-			switch m := e.(type) {
-			case publish.Timeout:
-				response.WriteHeader(http.StatusGatewayTimeout)
-				return nil
+		buffer := make([]byte, 4096)
+		n, err := body.Read(buffer)
+		if err != nil && err != io.EOF {
+			tunneled.EmitError(err, true)
+			return err
+		}
 
-			case publish.ClientError:
-				return m.Error
+		completed := err == io.EOF
 
-			case publish.HttpResponseStart:
-				for k, v := range m.Headers {
-					for _, h := range v {
-						response.Header().Add(k, h)
-					}
-				}
-
-				response.WriteHeader(int(m.Status))
-
-			case publish.HttpResponseData:
-				if len(m.Data) > 0 {
-					_, err := response.Write(m.Data)
-					if err != nil {
-						return err
-					}
-				}
-
-				if m.Completed {
-					return nil
-				}
-			}
-
-		default:
-			body := request.Body
-			for {
-				buffer := make([]byte, 4096)
-				n, err := body.Read(buffer)
-				if err != nil && err != io.EOF {
-					tunneled.Close()
-					return err
-				}
-
-				completed := err == io.EOF
-
-				tunneled.EmitRequestData(buffer[:n], completed)
-				if completed {
-					break
-				}
-			}
+		tunneled.EmitRequestData(buffer[:n], completed)
+		if completed {
+			break
 		}
 	}
 
-	return nil
+	select {
+	case err := <-done:
+		return err
+	}
 }
 
 func splitEndpointAndPath(rawPath string) (string, string, bool) {
