@@ -1,7 +1,6 @@
 package tunnel
 
 import (
-	"fmt"
 	"io"
 )
 
@@ -21,13 +20,11 @@ func newRequestReader() *requestReader {
 }
 
 func (r *requestReader) AppendData(data []byte, eof bool) {
-	fmt.Printf("READ D\n")
 	r.data <- requestChunk{data: data, eof: eof}
 }
 
 func (r *requestReader) Read(p []byte) (n int, err error) {
 	if r.curr != nil {
-		fmt.Printf("READ 1\n")
 		return r.readNext(p)
 	}
 
@@ -37,7 +34,6 @@ func (r *requestReader) Read(p []byte) (n int, err error) {
 		break
 	}
 
-	fmt.Printf("READ 2\n")
 	return r.readNext(p)
 }
 

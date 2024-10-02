@@ -82,7 +82,6 @@ for example:
 			for e := range ch {
 				switch m := e.(type) {
 				case tunnel.RequestStart:
-					fmt.Printf("START")
 					req, _ := newTunneledRequest(ctx, localBase, &m, ch)
 					if req == nil {
 						printStatus(m.GetMethod(), m.GetPath(), "Failed with error: %s", err.Error())
@@ -93,32 +92,24 @@ for example:
 
 					// Register the request, so we can send updates to it.
 					requests[req.requestId] = req
-					fmt.Printf("REGISTER <%s>", req.requestId)
 
 				case tunnel.TransportError:
-					fmt.Printf("ERR")
-
 					req, ok := requests[m.GetRequestId()]
 					if !ok {
-						fmt.Printf("NOT FOUND <%s>", m.GetRequestId())
 						break
 					}
 
 					req.cancel()
 
 				case tunnel.RequestData:
-					fmt.Printf("DATA ->")
-					id := m.GetRequestId()
-					req, ok := requests[id]
+					req, ok := requests[m.GetRequestId()]
 					if !ok {
-						fmt.Printf("NOT FOUND <%s>", id)
 						break
 					}
 
 					req.appendRequestData(m.GetData(), m.GetCompleted())
 
 				case responseMessage:
-					fmt.Printf("RES")
 					if m.completed {
 						delete(requests, m.request.requestId)
 					}
@@ -129,9 +120,6 @@ for example:
 					} else if m.status != "" {
 						printStatus(m.request.method, m.request.path, m.status)
 					}
-
-				default:
-					fmt.Printf("INALID TYPE %T", m)
 				}
 			}
 		}()

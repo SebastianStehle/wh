@@ -70,52 +70,56 @@ func (a apiHandler) Index(c echo.Context) error {
 		tunneled.Close()
 	}()
 
-	body := request.Body
-	for {
-		buffer := make([]byte, 4096)
-		n, err := body.Read(buffer)
-		if err != nil && err != io.EOF {
-			tunneled.Close()
-			return err
-		}
-
-		completed := err == io.EOF
-
-		tunneled.EmitRequestData(buffer[:n], completed)
-		if completed {
-			break
-		}
-	}
-
 	ch := tunneled.Events()
-	for e := range ch {
-		switch m := e.(type) {
-		case publish.Timeout:
-			response.WriteHeader(http.StatusGatewayTimeout)
-			return nil
+	for {
+		select {
+		case e := <-tunneled.Events():
+			switch m := e.(type) {
+			case publish.Timeout:
+				response.WriteHeader(http.StatusGatewayTimeout)
+				return nil
 
-		case publish.ClientError:
-			return m.Error
+			case publish.ClientError:
+				return m.Error
 
-		case publish.HttpResponseStart:
-			for k, v := range m.Headers {
-				for _, h := range v {
-					response.Header().Add(k, h)
+			case publish.HttpResponseStart:
+				for k, v := range m.Headers {
+					for _, h := range v {
+						response.Header().Add(k, h)
+					}
+				}
+
+				response.WriteHeader(int(m.Status))
+
+			case publish.HttpResponseData:
+				if len(m.Data) > 0 {
+					_, err := response.Write(m.Data)
+					if err != nil {
+						return err
+					}
+				}
+
+				if m.Completed {
+					return nil
 				}
 			}
 
-			response.WriteHeader(int(m.Status))
-
-		case publish.HttpResponseData:
-			if len(m.Data) > 0 {
-				_, err := response.Write(m.Data)
-				if err != nil {
+		default:
+			body := request.Body
+			for {
+				buffer := make([]byte, 4096)
+				n, err := body.Read(buffer)
+				if err != nil && err != io.EOF {
+					tunneled.Close()
 					return err
 				}
-			}
 
-			if m.Completed {
-				return nil
+				completed := err == io.EOF
+
+				tunneled.EmitRequestData(buffer[:n], completed)
+				if completed {
+					break
+				}
 			}
 		}
 	}

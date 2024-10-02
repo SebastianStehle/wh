@@ -61,7 +61,7 @@ func NewTunneledRequest(buckets Buckets, logger *zap.Logger, log Log, endpoint s
 		internalChannel: make(chan interface{}),
 		log:             log,
 		logger:          logger,
-		publicChannel:   make(chan interface{}),
+		publicChannel:   make(chan interface{}, 1),
 		requestId:       requestId,
 		request:         request,
 		state:           StateRequestStarted,
@@ -88,6 +88,7 @@ func (t tunneledRequest) Start() {
 
 	fmt.Printf("FOOBAR")
 	go func() {
+		t.publicChannel <- t.request
 		for {
 			select {
 			case <-timer.C:
@@ -218,9 +219,6 @@ func (t tunneledRequest) EmitClientError(error error) {
 }
 
 func (t tunneledRequest) Close() {
-	close(t.publicChannel)
-	close(t.internalChannel)
-
 	if t.responseWriter != nil {
 		_ = t.responseWriter.Close()
 		t.responseWriter = nil

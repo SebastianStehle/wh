@@ -66,18 +66,14 @@ func (r *tunneledRequest) appendRequestData(data []byte, completed bool) {
 }
 
 func (r *tunneledRequest) run(ctx context.Context, sender chan interface{}) {
-	fmt.Printf("1\n")
 	response, err := http.DefaultClient.Do(r.request)
 	if err != nil {
-		fmt.Printf("2 %s\n", err)
 		// Just send errors back to the sender go-routine, because we can't handle them here.
 		sender <- r.buildErrorResponse(err, fmt.Sprintf("Failed to send tunneledRequest %s", err))
 		return
 	}
-	fmt.Printf("2\n")
 
 	status := int32(response.StatusCode)
-	fmt.Printf("3\n")
 
 	h := headersToLocal(response.Header)
 	sender <- responseMessage{
@@ -92,10 +88,8 @@ func (r *tunneledRequest) run(ctx context.Context, sender chan interface{}) {
 			},
 		},
 	}
-	fmt.Printf("4\n")
 
 	body := response.Body
-	fmt.Printf("5\n")
 	for {
 		select {
 		case <-ctx.Done():
@@ -103,8 +97,6 @@ func (r *tunneledRequest) run(ctx context.Context, sender chan interface{}) {
 			return
 
 		default:
-			fmt.Printf("READING")
-
 			buffer := make([]byte, 4*1024)
 			n, err := body.Read(buffer)
 			if err != nil && err != io.EOF {
