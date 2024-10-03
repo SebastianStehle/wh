@@ -38,5 +38,3 @@ type HttpError struct {
 	// Indicate if the error is a timeout
 	Timeout bool
 }
-
-type Complete struct{}

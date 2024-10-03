@@ -17,12 +17,6 @@ type publisher struct {
 	logger    *zap.Logger
 }
 
-type ResponseEvent struct {
-	error   error
-	started *HttpResponseStart
-	chunk   *HttpData
-}
-
 // ErrAlreadyRegistered There is already a request handler.
 var ErrAlreadyRegistered = errors.New("AlreadyRegistered")
 
@@ -40,8 +34,8 @@ type Publisher interface {
 }
 
 func NewPublisher(config *viper.Viper, logger *zap.Logger, buckets Buckets) Publisher {
-	maxSize := config.GetInt("log.maxSize")
-	maxEntries := config.GetInt("log.maxEntries")
+	maxSize := config.GetInt("logger.maxSize")
+	maxEntries := config.GetInt("logger.maxEntries")
 
 	log := NewLog(maxSize, maxEntries)
 
@@ -79,22 +73,17 @@ func (p *publisher) Subscribe(endpoint string, handler func(request *TunneledReq
 func (p *publisher) ForwardRequest(endpoint string, request HttpRequestStart) (*TunneledRequest, error) {
 	requestId := uuid.New().String()
 
-	// Event if nobody is listening, we would like to log the event.
-	p.log.LogRequest(requestId, endpoint, request)
-
 	handler, err := p.getHandler(endpoint)
 	if err != nil {
 		return nil, err
 	}
 
-	tunneledRequest := NewTunneledRequest(p.buckets, p.logger, p.log, endpoint, requestId, request)
+	req := NewTunneledRequest(endpoint, requestId, request, p.logger)
+	req.Listen(1001, NewLogListener(req, p.buckets, p.log, p.logger))
 	// Publish the request first, so that we can receive events.
-	handler(tunneledRequest)
+	handler(req)
 
-	// Start the actual request in another go-routine
-	tunneledRequest.Start()
-
-	return tunneledRequest, nil
+	return req, nil
 }
 
 func (p *publisher) getHandler(endpoint string) (func(*TunneledRequest), error) {

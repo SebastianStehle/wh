@@ -5,7 +5,7 @@ import (
 	"io"
 )
 
-type bucketListener struct {
+type logListener struct {
 	buckets        Buckets
 	log            Log
 	logger         *zap.Logger
@@ -14,10 +14,15 @@ type bucketListener struct {
 	requestWriter  io.WriteCloser
 	responseSize   int
 	responseWriter io.WriteCloser
+	status         int
+	response       *HttpResponseStart
+	error          error
 }
 
-func NewBucketListener(request *TunneledRequest, buckets Buckets, log Log, logger *zap.Logger) RequestListener {
-	return &bucketListener{
+func NewLogListener(request *TunneledRequest, buckets Buckets, log Log, logger *zap.Logger) RequestListener {
+	log.LogRequest(request.RequestId, request.Endpoint, request.Request)
+
+	return &logListener{
 		buckets: buckets,
 		log:     log,
 		logger:  logger,
@@ -25,7 +30,7 @@ func NewBucketListener(request *TunneledRequest, buckets Buckets, log Log, logge
 	}
 }
 
-func (l bucketListener) OnRequestData(msg HttpData) {
+func (l logListener) OnRequestData(msg HttpData) {
 	data := msg.Data
 	if len(data) <= 0 {
 		return
@@ -44,22 +49,22 @@ func (l bucketListener) OnRequestData(msg HttpData) {
 
 	n, err := l.requestWriter.Write(data)
 	if err != nil {
+		l.requestSize = -1
 		l.logger.Error("Failed to write to request writer",
 			zap.Error(err),
 		)
 	}
 
 	l.requestSize += n
-
 	if msg.Completed {
 		l.closeRequestWriter()
 	}
 }
 
-func (l bucketListener) OnResponseStart(msg HttpResponseStart) {
+func (l logListener) OnResponseStart(HttpResponseStart) {
 }
 
-func (l bucketListener) OnResponseData(msg HttpData) {
+func (l logListener) OnResponseData(msg HttpData) {
 	data := msg.Data
 	if len(data) <= 0 {
 		return
@@ -78,27 +83,37 @@ func (l bucketListener) OnResponseData(msg HttpData) {
 
 	n, err := l.responseWriter.Write(data)
 	if err != nil {
+		l.responseSize = -1
 		l.logger.Error("Failed to write to response writer",
 			zap.Error(err),
 		)
 	}
 
 	l.responseSize += n
-
 	if msg.Completed {
 		l.closeResponseWriter()
 	}
 }
 
-func (l bucketListener) OnError(msg HttpError) {
+func (l logListener) OnError(msg HttpError) {
+	l.error = msg.Error
 }
 
-func (l bucketListener) OnComplete() {
+func (l logListener) OnComplete() {
 	l.closeRequestWriter()
 	l.closeResponseWriter()
+
+	requestId := l.request.RequestId
+	if l.error != nil && l.error.Error != nil {
+		l.log.LogError(requestId, l.error)
+	} else if l.response != nil {
+		l.log.LogResponse(requestId, *l.response, l.requestSize, l.responseSize)
+	} else {
+		l.log.LogTimeout(requestId)
+	}
 }
 
-func (l bucketListener) closeRequestWriter() {
+func (l logListener) closeRequestWriter() {
 	if l.requestWriter == nil {
 		return
 	}
@@ -114,7 +129,7 @@ func (l bucketListener) closeRequestWriter() {
 	}
 }
 
-func (l bucketListener) closeResponseWriter() {
+func (l logListener) closeResponseWriter() {
 	if l.responseWriter == nil {
 		return
 	}

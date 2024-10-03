@@ -1,23 +1,24 @@
 package publish
 
 import (
-	"errors"
 	"net/http"
 	"slices"
 	"time"
 )
 
 type LogEntry struct {
-	Completed time.Time
-	Endpoint  string
-	Error     error
-	Request   HttpRequestStart
-	RequestId string
-	Response  *HttpResponseStart
-	Size      int
-	Started   time.Time
-	Timeout   bool
-	Timestamp int64
+	Completed    time.Time
+	Endpoint     string
+	Error        error
+	Request      HttpRequestStart
+	RequestSize  int
+	RequestId    string
+	Response     *HttpResponseStart
+	ResponseSize int
+	Size         int
+	Started      time.Time
+	Timeout      bool
+	Timestamp    int64
 }
 
 type log struct {
@@ -29,7 +30,7 @@ type log struct {
 type Log interface {
 	LogRequest(requestId string, endpoint string, request HttpRequestStart)
 
-	LogResponse(requestId string, response HttpResponseStart)
+	LogResponse(requestId string, response HttpResponseStart, requestSize int, responseSize int)
 
 	LogTimeout(requestId string)
 
@@ -39,67 +40,14 @@ type Log interface {
 }
 
 func NewLog(maxSize int, maxEntries int) Log {
-
-	headers := http.Header{
-		"foo":          []string{"a", "b", "c"},
-		"Content-Type": []string{"text/json"},
-	}
-
-	request1 := HttpRequestStart{
-		Method:  "GET",
-		Headers: headers,
-		Path:    "/foo/bar",
-	}
-
-	request2 := HttpRequestStart{
-		Method:  "POST",
-		Headers: headers,
-		Path:    "/foo/bar",
-	}
-
-	request3 := HttpRequestStart{
-		Method:  "DELETE",
-		Headers: headers,
-		Path:    "/foo/bar",
-	}
-
-	response := HttpResponseStart{
-		Headers: headers,
-		Status:  200,
-	}
-
-	entry1 := LogEntry{
-		Endpoint:  "abc",
-		RequestId: "1",
-		Request:   request1,
-		Response:  &response,
-		Timestamp: 1,
-	}
-
-	entry2 := LogEntry{
-		Endpoint:  "abc",
-		RequestId: "2",
-		Request:   request2,
-		Timeout:   true,
-		Timestamp: 1,
-	}
-
-	entry3 := LogEntry{
-		Endpoint:  "abc",
-		RequestId: "3",
-		Request:   request3,
-		Error:     errors.New(("error")),
-		Timestamp: 1,
-	}
-
 	return &log{
-		entries:    []LogEntry{entry1, entry2, entry3},
+		entries:    make([]LogEntry, 0),
 		maxEntries: maxEntries,
 		maxSize:    maxSize,
 	}
 }
 
-func (l *log) LogRequest(requestId string, endpoint string, request HttpRequestStart) {
+func (l log) LogRequest(requestId string, endpoint string, request HttpRequestStart) {
 	if l.maxEntries <= 0 || l.maxSize <= 0 {
 		return
 	}
@@ -119,6 +67,15 @@ func (l *log) LogRequest(requestId string, endpoint string, request HttpRequestS
 	l.ensureSize()
 }
 
+func (l log) LogRequestBody(requestId string, size int) {
+	entry := l.findEntry(requestId)
+	if entry == nil {
+		return
+	}
+
+	entry.RequestSize = size
+}
+
 func (l log) LogTimeout(requestId string) {
 	entry := l.findEntry(requestId)
 	if entry == nil || entry.Response != nil || entry.Timeout || entry.Error != nil {
@@ -128,24 +85,32 @@ func (l log) LogTimeout(requestId string) {
 	entry.Completed = time.Now()
 	entry.Timeout = true
 	entry.Timestamp = timestamp()
-	entry.estimateSize()
-
-	l.ensureSize()
 }
 
-func (l log) LogResponse(requestId string, response HttpResponseStart) {
+func (l log) LogResponse(requestId string, response HttpResponseStart, requestSize int, responseSize int) {
 	entry := l.findEntry(requestId)
 	if entry == nil || entry.Response != nil || entry.Timeout || entry.Error != nil {
 		return
 	}
 
 	entry.Completed = time.Now()
+	entry.RequestSize = requestSize
 	entry.Response = &response
+	entry.ResponseSize = responseSize
 	entry.Timeout = true
 	entry.Timestamp = timestamp()
 	entry.estimateSize()
 
 	l.ensureSize()
+}
+
+func (l log) LogResponseBody(requestId string, size int) {
+	entry := l.findEntry(requestId)
+	if entry == nil {
+		return
+	}
+
+	entry.ResponseSize = size
 }
 
 func (l log) LogError(requestId string, err error) {

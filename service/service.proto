@@ -94,6 +94,9 @@ message TransportError {
 
     // The error message.
     required string error = 2;
+
+    // Indicates if the error is a timeout.
+    required bool timeout = 3;
 }
 
 message HttpHeaderValues {
