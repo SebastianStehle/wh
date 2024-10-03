@@ -19,23 +19,26 @@ var (
 )
 
 type apiHandler struct {
+	logger    *zap.Logger
 	publisher publish.Publisher
 	timeout   time.Duration
-	logger    *zap.Logger
 }
 
 type ApiHandler interface {
 	Index(c echo.Context) error
 }
 
-func NewApiHandler(config *viper.Viper, publisher publish.Publisher, logger *zap.Logger) ApiHandler {
+func NewApiHandler(publisher publish.Publisher, config *viper.Viper, logger *zap.Logger) ApiHandler {
+	timeout := config.GetDuration("request.timeout")
+
 	return &apiHandler{
-		publisher: publisher,
-		timeout:   config.GetDuration("request.timeout"),
 		logger:    logger,
+		publisher: publisher,
+		timeout:   timeout,
 	}
 }
 
+// ANY /endpoints/*
 func (a apiHandler) Index(c echo.Context) error {
 	request := c.Request()
 	response := c.Response()

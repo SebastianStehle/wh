@@ -9,8 +9,12 @@
             }
 
             const mode = element.getAttribute('hx-mode');
-
             if (!mode) {
+                return;
+            }
+
+            const path = element.getAttribute('hx-path');
+            if (!path) {
                 return;
             }
 
@@ -27,6 +31,12 @@
                     editor.setTheme('ace/theme/github');
                     editor.session.setMode(mode);
                     editor.renderer.setScrollMargin(10, 10);
+
+                    fetch(path)
+                        .then(x => x.tex())
+                        .then(x => {
+                            editor.setValue(x)
+                        });
                     break;
             }
         }

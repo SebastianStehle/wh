@@ -31,17 +31,8 @@ type TunneledRequest struct {
 	listeners []registration
 	Request   HttpRequestStart
 	RequestId string
-	Status    status
+	Status    Status
 }
-
-type status = int
-
-const (
-	StatusRequestStarted status = iota
-	StatusRequestCompleted
-	StatusResponseStarted
-	StatusDone
-)
 
 func NewTunneledRequest(endpoint string, requestId string, request HttpRequestStart, logger *zap.Logger) *TunneledRequest {
 	return &TunneledRequest{
@@ -107,7 +98,7 @@ func (t *TunneledRequest) EmitResponseData(origin int, data []byte, completed bo
 	}
 
 	if completed {
-		t.Status = StatusRequestCompleted
+		t.Status = StatusCompleted
 	}
 
 	msg := HttpData{Data: data, Completed: completed}
@@ -126,11 +117,15 @@ func (t *TunneledRequest) EmitError(origin int, error error, timeout bool) {
 	t.lockObj.Lock()
 	defer t.lockObj.Unlock()
 
-	if t.Status != StatusDone {
+	if IsTerminated(t.Status) {
 		return
 	}
 
-	t.Status = StatusDone
+	if timeout {
+		t.Status = StatusTimeout
+	} else {
+		t.Status = StatusFailed
+	}
 
 	msg := HttpError{Error: error, Timeout: timeout}
 	for _, r := range t.listeners {
@@ -145,11 +140,11 @@ func (t *TunneledRequest) Cancel(origin int) {
 	t.lockObj.Lock()
 	defer t.lockObj.Unlock()
 
-	if t.Status != StatusDone {
+	if IsTerminated(t.Status) {
 		return
 	}
 
-	t.Status = StatusDone
+	t.Status = StatusTimeout
 
 	msg := HttpError{Timeout: true}
 	for _, r := range t.listeners {

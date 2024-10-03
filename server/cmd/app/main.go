@@ -39,6 +39,7 @@ var (
 	handleHome     home.HomeHandler
 	logger         *zap.Logger
 	publisher      publish.Publisher
+	store          publish.Store
 )
 
 func main() {
@@ -49,23 +50,29 @@ func main() {
 		panic(fmt.Errorf("fatal error reading config file: %w", err))
 	}
 
+	// Set default config for consecutive calls.
+	domain.SetDefaultConfig(config)
+
 	logger, err = log.NewLogger(config)
 	if err != nil {
 		panic(fmt.Errorf("fatal error creating logger: %w", err))
+	}
+
+	store, err = publish.NewStore(config)
+	if err != nil {
+		panic(fmt.Errorf("fatal error creating store: %w", err))
 	}
 
 	defer func(log *zap.Logger) {
 		_ = log.Sync()
 	}(logger)
 
-	domain.SetDefaultConfig(config)
-
 	buckets = publish.NewFileBucket(config)
-	publisher = publish.NewPublisher(config, logger, buckets)
+	publisher = publish.NewPublisher(store, buckets, logger)
 	authenticator = auth.NewAuthenticator(config)
 	authMiddleware = auth.NewAuthMiddleware(authenticator, logger)
-	handleHome = home.NewHomeHandler(publisher, authenticator, logger)
-	handleApi = api.NewApiHandler(config, publisher, logger)
+	handleHome = home.NewHomeHandler(store, buckets, authenticator, logger)
+	handleApi = api.NewApiHandler(publisher, config, logger)
 
 	// Create a grpc server, but do not start it yet, because it is handled by the mux.
 	grpcServer := initGrpc()
@@ -124,6 +131,8 @@ func startHttp() *echo.Echo {
 
 	e.POST("/", handleHome.PostIndex, authMiddleware.MustNotBeAuthenticated)
 	e.GET("/", handleHome.GetIndex, authMiddleware.MustNotBeAuthenticated)
+	e.GET("/buckets/:id/request", handleHome.RequestBlob, authMiddleware.MustBeAuthenticated)
+	e.GET("/buckets/:id/response", handleHome.ResponseBlob, authMiddleware.MustBeAuthenticated)
 	e.GET("/internal", handleHome.GetInternal, authMiddleware.MustBeAuthenticated)
 	e.GET("/error", handleHome.GetError)
 	e.GET("/events", handleHome.GetEvents, authMiddleware.MustBeAuthenticated)

@@ -83,7 +83,7 @@ for example:
 				switch m := e.(type) {
 				case tunnel.RequestStart:
 					req, _ := newTunneledRequest(ctx, localBase, &m, ch)
-					if req == nil {
+					if err != nil {
 						printStatus(m.GetMethod(), m.GetPath(), "Failed with error: %s", err.Error())
 						break
 					}
@@ -152,12 +152,12 @@ for example:
 	},
 }
 
-func printStatus(method string, path string, format string, a ...any) string {
+func printStatus(method string, path string, format string, a ...any) {
 	prefix := fmt.Sprintf(" - %s %s ",
 		formatCell(method, 10),
 		formatCell(path, 30))
 
-	return prefix + fmt.Sprintf(format, a...)
+	fmt.Println(prefix + fmt.Sprintf(format, a...))
 }
 
 func formatCell(source string, max int) string {

@@ -1,36 +1,42 @@
 package publish
 
 import (
-	"go.uber.org/zap"
+	"fmt"
 	"io"
+
+	"go.uber.org/zap"
 )
 
-type logListener struct {
+type recorder struct {
 	buckets        Buckets
-	log            Log
+	store          Store
 	logger         *zap.Logger
 	request        *TunneledRequest
 	requestSize    int
 	requestWriter  io.WriteCloser
 	responseSize   int
 	responseWriter io.WriteCloser
-	status         int
+	status         Status
 	response       *HttpResponseStart
 	error          error
 }
 
-func NewLogListener(request *TunneledRequest, buckets Buckets, log Log, logger *zap.Logger) RequestListener {
-	log.LogRequest(request.RequestId, request.Endpoint, request.Request)
+func NewRecorder(request *TunneledRequest, store Store, buckets Buckets, logger *zap.Logger) RequestListener {
+	if err := store.LogRequest(request.RequestId, request.Endpoint, request.Request); err != nil {
+		logger.Error("Failed to record request",
+			zap.Error(err),
+		)
+	}
 
-	return &logListener{
+	return &recorder{
 		buckets: buckets,
-		log:     log,
 		logger:  logger,
 		request: request,
+		store:   store,
 	}
 }
 
-func (l logListener) OnRequestData(msg HttpData) {
+func (l *recorder) OnRequestData(msg HttpData) {
 	data := msg.Data
 	if len(data) <= 0 {
 		return
@@ -61,10 +67,11 @@ func (l logListener) OnRequestData(msg HttpData) {
 	}
 }
 
-func (l logListener) OnResponseStart(HttpResponseStart) {
+func (l *recorder) OnResponseStart(msg HttpResponseStart) {
+	l.response = &msg
 }
 
-func (l logListener) OnResponseData(msg HttpData) {
+func (l *recorder) OnResponseData(msg HttpData) {
 	data := msg.Data
 	if len(data) <= 0 {
 		return
@@ -81,6 +88,8 @@ func (l logListener) OnResponseData(msg HttpData) {
 		l.responseWriter = writer
 	}
 
+	x := string(data)
+	fmt.Println(x)
 	n, err := l.responseWriter.Write(data)
 	if err != nil {
 		l.responseSize = -1
@@ -95,25 +104,29 @@ func (l logListener) OnResponseData(msg HttpData) {
 	}
 }
 
-func (l logListener) OnError(msg HttpError) {
+func (l *recorder) OnError(msg HttpError) {
 	l.error = msg.Error
 }
 
-func (l logListener) OnComplete() {
+func (l *recorder) OnComplete() {
 	l.closeRequestWriter()
 	l.closeResponseWriter()
 
-	requestId := l.request.RequestId
-	if l.error != nil && l.error.Error != nil {
-		l.log.LogError(requestId, l.error)
-	} else if l.response != nil {
-		l.log.LogResponse(requestId, *l.response, l.requestSize, l.responseSize)
-	} else {
-		l.log.LogTimeout(requestId)
+	err := l.store.LogResponse(
+		l.request.RequestId,
+		l.requestSize,
+		l.response,
+		l.responseSize,
+		l.error,
+		l.request.Status)
+	if err != nil {
+		l.logger.Error("Failed to update request",
+			zap.Error(err),
+		)
 	}
 }
 
-func (l logListener) closeRequestWriter() {
+func (l *recorder) closeRequestWriter() {
 	if l.requestWriter == nil {
 		return
 	}
@@ -129,7 +142,7 @@ func (l logListener) closeRequestWriter() {
 	}
 }
 
-func (l logListener) closeResponseWriter() {
+func (l *recorder) closeResponseWriter() {
 	if l.responseWriter == nil {
 		return
 	}

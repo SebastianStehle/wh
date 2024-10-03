@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/spf13/viper"
 	"go.uber.org/zap"
 )
 
@@ -13,8 +12,8 @@ type publisher struct {
 	endpoints map[string]func(*TunneledRequest)
 	buckets   Buckets
 	lockObj   sync.RWMutex
-	log       Log
 	logger    *zap.Logger
+	store     Store
 }
 
 // ErrAlreadyRegistered There is already a request handler.
@@ -29,27 +28,16 @@ type Publisher interface {
 	Unsubscribe(endpoint string)
 
 	ForwardRequest(endpoint string, request HttpRequestStart) (*TunneledRequest, error)
-
-	GetEntries(etag int64) ([]LogEntry, int64)
 }
 
-func NewPublisher(config *viper.Viper, logger *zap.Logger, buckets Buckets) Publisher {
-	maxSize := config.GetInt("logger.maxSize")
-	maxEntries := config.GetInt("logger.maxEntries")
-
-	log := NewLog(maxSize, maxEntries)
-
+func NewPublisher(store Store, buckets Buckets, logger *zap.Logger) Publisher {
 	return &publisher{
 		endpoints: make(map[string]func(*TunneledRequest)),
 		buckets:   buckets,
 		lockObj:   sync.RWMutex{},
-		log:       log,
 		logger:    logger,
+		store:     store,
 	}
-}
-
-func (p *publisher) GetEntries(etag int64) ([]LogEntry, int64) {
-	return p.log.GetEntries(etag)
 }
 
 func (p *publisher) Unsubscribe(endpoint string) {
@@ -79,7 +67,7 @@ func (p *publisher) ForwardRequest(endpoint string, request HttpRequestStart) (*
 	}
 
 	req := NewTunneledRequest(endpoint, requestId, request, p.logger)
-	req.Listen(1001, NewLogListener(req, p.buckets, p.log, p.logger))
+	req.Listen(1001, NewRecorder(req, p.store, p.buckets, p.logger))
 	// Publish the request first, so that we can receive events.
 	handler(req)
 

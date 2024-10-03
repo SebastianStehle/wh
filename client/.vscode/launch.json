@@ -11,7 +11,7 @@
             "mode": "auto",
             "cwd": "${workspaceFolder}",
             "program": "${workspaceFolder}/main.go",
-            "args": ["tunnel", "foo", "https://google.com"]
+            "args": ["tunnel", "foo", "https://squidex.io"]
         }
     ]
 }

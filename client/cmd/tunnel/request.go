@@ -109,7 +109,7 @@ func (r *tunneledRequest) run(ctx context.Context, sender chan interface{}) {
 
 			statusText := ""
 			if complete {
-				statusText = fmt.Sprintf("%d %s\n", status, http.StatusText(int(status)))
+				statusText = fmt.Sprintf("%d %s", status, http.StatusText(int(status)))
 			}
 
 			sender <- responseMessage{

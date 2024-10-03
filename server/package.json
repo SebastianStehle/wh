@@ -6,7 +6,7 @@
     "watch:templ": "templ generate -watch",
     "watch:go": "air -c .air",
     "watch:tailwind": "tailwindcss -i ./public/styles/styles.css -o ./public/css/styles.css --watch",
-    "dev": "npm run templ && concurrently --restart-tries -1 --kill-others -n w: npm:watch:*"
+    "dev": "npm run templ && cross-env CGO_ENABLED=1 concurrently --restart-tries -1 --kill-others -n w: npm:watch:*"
   },
   "dependencies": {
     "color": "^4.2.3",
