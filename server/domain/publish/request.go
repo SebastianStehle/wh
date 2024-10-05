@@ -1,9 +1,10 @@
 package publish
 
 import (
-	"go.uber.org/zap"
 	"net/http"
 	"sync"
+
+	"go.uber.org/zap"
 )
 
 type RequestListener interface {
@@ -24,11 +25,10 @@ type registration struct {
 }
 
 type TunneledRequest struct {
-	buckets   Buckets
-	Endpoint  string
-	lockObj   sync.RWMutex
-	logger    *zap.Logger
 	listeners []registration
+	lock      sync.RWMutex
+	logger    *zap.Logger
+	Endpoint  string
 	Request   HttpRequestStart
 	RequestId string
 	Status    Status
@@ -52,8 +52,8 @@ func (t *TunneledRequest) Listen(origin int, listener RequestListener) {
 }
 
 func (t *TunneledRequest) EmitRequestData(origin int, data []byte, completed bool) {
-	t.lockObj.Lock()
-	defer t.lockObj.Unlock()
+	t.lock.Lock()
+	defer t.lock.Unlock()
 
 	if t.Status != StatusRequestStarted {
 		return
@@ -72,8 +72,8 @@ func (t *TunneledRequest) EmitRequestData(origin int, data []byte, completed boo
 }
 
 func (t *TunneledRequest) EmitResponse(origin int, headers http.Header, status int32) {
-	t.lockObj.Lock()
-	defer t.lockObj.Unlock()
+	t.lock.Lock()
+	defer t.lock.Unlock()
 
 	if t.Status != StatusRequestCompleted {
 		return
@@ -90,8 +90,8 @@ func (t *TunneledRequest) EmitResponse(origin int, headers http.Header, status i
 }
 
 func (t *TunneledRequest) EmitResponseData(origin int, data []byte, completed bool) {
-	t.lockObj.Lock()
-	defer t.lockObj.Unlock()
+	t.lock.Lock()
+	defer t.lock.Unlock()
 
 	if t.Status != StatusResponseStarted {
 		return
@@ -114,8 +114,8 @@ func (t *TunneledRequest) EmitResponseData(origin int, data []byte, completed bo
 }
 
 func (t *TunneledRequest) EmitError(origin int, error error, timeout bool) {
-	t.lockObj.Lock()
-	defer t.lockObj.Unlock()
+	t.lock.Lock()
+	defer t.lock.Unlock()
 
 	if IsTerminated(t.Status) {
 		return
@@ -137,8 +137,8 @@ func (t *TunneledRequest) EmitError(origin int, error error, timeout bool) {
 }
 
 func (t *TunneledRequest) Cancel(origin int) {
-	t.lockObj.Lock()
-	defer t.lockObj.Unlock()
+	t.lock.Lock()
+	defer t.lock.Unlock()
 
 	if IsTerminated(t.Status) {
 		return

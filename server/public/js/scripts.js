@@ -22,7 +22,7 @@
                 case 'htmx:afterProcessNode':
                     const editor = ace.edit(element, {
                         minLines: 5,
-                        maxLines: 10,
+                        maxLines: 30,
                         fontSize: '11pt',
                         fontFamily: undefined,
                         padding: 8
@@ -32,8 +32,9 @@
                     editor.session.setMode(mode);
                     editor.renderer.setScrollMargin(10, 10);
 
+                    // Keep it simple, no async.
                     fetch(path)
-                        .then(x => x.tex())
+                        .then(x => x.text())
                         .then(x => {
                             editor.setValue(x)
                         });

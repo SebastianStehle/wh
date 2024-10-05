@@ -12,15 +12,15 @@ type requestReader struct {
 
 type requestChunk struct {
 	data []byte
-	eof  bool
+	done bool
 }
 
 func newRequestReader() *requestReader {
 	return &requestReader{data: make(chan requestChunk, 1)}
 }
 
-func (r *requestReader) AppendData(data []byte, eof bool) {
-	r.data <- requestChunk{data: data, eof: eof}
+func (r *requestReader) AppendData(data []byte, done bool) {
+	r.data <- requestChunk{data: data, done: done}
 }
 
 func (r *requestReader) Read(p []byte) (n int, err error) {
@@ -29,10 +29,8 @@ func (r *requestReader) Read(p []byte) (n int, err error) {
 	}
 
 	// Just wait for the next chunk from the backend.
-	for m := range r.data {
-		r.curr = &m
-		break
-	}
+	d := <-r.data
+	r.curr = &d
 
 	return r.readNext(p)
 }
@@ -49,7 +47,7 @@ func (r *requestReader) readNext(p []byte) (n int, err error) {
 
 	err = nil
 	if r.cursor >= len(data) {
-		if r.curr.eof {
+		if r.curr.done {
 			err = io.EOF
 		}
 

@@ -28,12 +28,16 @@ type tunneledRequest struct {
 func newTunneledRequest(ctx context.Context, localBase string, start *tunnel.RequestStart, sender chan interface{}) (*tunneledRequest, error) {
 	requestReader := newRequestReader()
 
-	requestCtx, cancel := context.WithTimeout(ctx, 4*time.Hour)
+	//goland:noinspection GoVetLostCancel
+	// Will be cancelled in the go-routine
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Hour)
+	defer cancel()
 
 	localUrl := combineUrl(localBase, start.GetPath())
 
-	httpReq, err := http.NewRequestWithContext(requestCtx, start.GetMethod(), localUrl, requestReader)
+	httpReq, err := http.NewRequestWithContext(ctx, start.GetMethod(), localUrl, requestReader)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 
@@ -53,6 +57,7 @@ func newTunneledRequest(ctx context.Context, localBase string, start *tunnel.Req
 	}
 
 	go func() {
+		// Cancel the actual request, but we cannot do it in the factory method and there ignore lint.
 		defer cancel()
 
 		request.run(ctx, sender)
@@ -141,6 +146,7 @@ func (r *tunneledRequest) buildErrorResponse(err error, statusText string) respo
 	fmt.Print(statusText)
 	fmt.Println()
 
+	timeout := false
 	return responseMessage{
 		request: r,
 		response: &tunnel.ClientMessage{
@@ -148,6 +154,7 @@ func (r *tunneledRequest) buildErrorResponse(err error, statusText string) respo
 				Error: &tunnel.TransportError{
 					RequestId: &r.requestId,
 					Error:     &errMsg,
+					Timeout:   &timeout,
 				},
 			},
 		},

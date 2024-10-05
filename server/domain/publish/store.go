@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"os"
 	"path"
 	"time"
 
@@ -33,10 +34,10 @@ const (
 			requestMethod	STRING NOT NULL,
 			requestPath		STRING NOT NULL,
 			requestHeaders	STRING NOT NULL,
-			requestSize		INT,
-			responseStatus 	INT,
+			requestSize		INT NOT NULL DEFAULT 0,
+			responseStatus 	INT NOT NULL DEFAULT 0,
 			responseHeaders STRING,
-			responseSize 	INT,
+			responseSize 	INT NOT NULL DEFAULT 0,
 			error			STRING,
 			completed		DATETIME,
 			status			INT NOT NULL,
@@ -44,24 +45,12 @@ const (
 		)`
 )
 
-func GetRequestType(r *StoreEntry) (string, bool) {
-	hasContent := r != nil && r.RequestSize > 0 && r.Status == StatusCompleted
-	if !hasContent {
-		return "", false
-	}
-
-	header := r.Request.Headers.Get("Content-Type")
-	return header, header != ""
+func HasRequestBody(r *StoreEntry) bool {
+	return r != nil && r.RequestSize > 0 && r.Status == StatusCompleted
 }
 
-func GetResponseType(r *StoreEntry) (string, bool) {
-	hasContent := r != nil && r.ResponseSize > 0 && r.Status == StatusCompleted && r.Response != nil
-	if !hasContent {
-		return "", false
-	}
-
-	header := r.Response.Headers.Get("Content-Type")
-	return header, header != ""
+func HasResponseBody(r *StoreEntry) bool {
+	return r != nil && r.ResponseSize > 0 && r.Status == StatusCompleted && r.Response != nil
 }
 
 type record struct {
@@ -96,7 +85,14 @@ type Store interface {
 }
 
 func NewStore(config *viper.Viper) (Store, error) {
-	file := path.Join(config.GetString("dataFolder"), "data.db")
+	folder := config.GetString("dataFolder")
+
+	err := os.MkdirAll(folder, 0755)
+	if err != nil {
+		return nil, err
+	}
+
+	file := path.Join(folder, "data.db")
 
 	db, err := sql.Open("sqlite3", file)
 	if err != nil {
@@ -216,7 +212,8 @@ func (l store) GetEntry(requestId string) (*StoreEntry, error) {
 		return nil, err
 	}
 
-	for rows.Next() {
+	defer rows.Close()
+	if rows.Next() {
 		r, _, err := mapRecord(rows)
 		if err != nil {
 			return nil, nil
@@ -256,6 +253,8 @@ func (l store) GetEntries(etag int64) ([]StoreEntry, int64, error) {
 	}
 
 	newEtag := etag
+
+	defer rows.Close()
 	for rows.Next() {
 		r, etag, err := mapRecord(rows)
 		if err != nil {

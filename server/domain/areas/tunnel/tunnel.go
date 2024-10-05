@@ -61,7 +61,6 @@ func (l listener) OnComplete() {
 type tunnelServer struct {
 	logger    *zap.Logger
 	publisher publish.Publisher
-	requests  map[string]publish.TunneledRequest
 	generated.UnimplementedWebhookServiceServer
 }
 
@@ -95,11 +94,16 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 	go func() {
 		// There is no weak map yet, therefore ensure to clean it up.
 		requests := make(map[string]*publish.TunneledRequest)
+		defer func() {
+			fmt.Printf("DONE")
+		}()
 
 		for {
 			select {
 			case <-sender.done:
 				return
+			case msg := <-sender.complete:
+				delete(requests, msg.request.RequestId)
 			case msg := <-sender.requestStart:
 				requests[msg.RequestId] = msg
 				request := msg.Request
@@ -246,7 +250,7 @@ func (s *tunnelServer) logUnknownRequest(requestId string) {
 
 func (s *tunnelServer) sendMessage(stream Stream, t *publish.TunneledRequest, msg *generated.ServerMessage, emit bool) bool {
 	if err := stream.Send(msg); err != nil {
-		s.logger.Error("Could not send request start to client.",
+		s.logger.Error("Could not send request to client.",
 			zap.Error(err),
 		)
 

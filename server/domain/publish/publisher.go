@@ -11,7 +11,7 @@ import (
 type publisher struct {
 	endpoints map[string]func(*TunneledRequest)
 	buckets   Buckets
-	lockObj   sync.RWMutex
+	lock      sync.RWMutex
 	logger    *zap.Logger
 	store     Store
 }
@@ -34,7 +34,7 @@ func NewPublisher(store Store, buckets Buckets, logger *zap.Logger) Publisher {
 	return &publisher{
 		endpoints: make(map[string]func(*TunneledRequest)),
 		buckets:   buckets,
-		lockObj:   sync.RWMutex{},
+		lock:      sync.RWMutex{},
 		logger:    logger,
 		store:     store,
 	}
@@ -42,8 +42,8 @@ func NewPublisher(store Store, buckets Buckets, logger *zap.Logger) Publisher {
 
 func (p *publisher) Unsubscribe(endpoint string) {
 	// Ensure that only a single thread can access the thread
-	p.lockObj.Lock()
-	defer p.lockObj.Unlock()
+	p.lock.Lock()
+	defer p.lock.Unlock()
 
 	delete(p.endpoints, endpoint)
 }
@@ -76,8 +76,8 @@ func (p *publisher) ForwardRequest(endpoint string, request HttpRequestStart) (*
 
 func (p *publisher) getHandler(endpoint string) (func(*TunneledRequest), error) {
 	// Ensure that only a single thread can access the thread
-	p.lockObj.Lock()
-	defer p.lockObj.Unlock()
+	p.lock.Lock()
+	defer p.lock.Unlock()
 
 	byEndpoint, ok := p.endpoints[endpoint]
 	if !ok || byEndpoint == nil {

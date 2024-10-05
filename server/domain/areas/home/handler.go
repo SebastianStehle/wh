@@ -96,8 +96,7 @@ func (h homeHandler) RequestBlob(c echo.Context) error {
 		return err
 	}
 
-	mimeType, ok := publish.GetRequestType(record)
-	if !ok {
+	if !publish.HasRequestBody(record) {
 		return c.NoContent(http.StatusNotFound)
 	}
 
@@ -106,10 +105,7 @@ func (h homeHandler) RequestBlob(c echo.Context) error {
 		return err
 	}
 
-	c.Response().Header().Add("Content-Type", mimeType)
-
-	_, err = io.Copy(c.Response().Writer, reader)
-	return err
+	return writeResponse(c.Response(), reader, record.Request.Headers)
 }
 
 // GET /buckets/:id/response
@@ -120,8 +116,7 @@ func (h homeHandler) ResponseBlob(c echo.Context) error {
 		return err
 	}
 
-	mimeType, ok := publish.GetResponseType(record)
-	if !ok {
+	if !publish.HasResponseBody(record) {
 		return c.NoContent(http.StatusNotFound)
 	}
 
@@ -130,10 +125,7 @@ func (h homeHandler) ResponseBlob(c echo.Context) error {
 		return err
 	}
 
-	c.Response().Header().Add("Content-Type", mimeType)
-
-	_, err = io.Copy(c.Response().Writer, reader)
-	return err
+	return writeResponse(c.Response(), reader, record.Response.Headers)
 }
 
 // GET /events
@@ -178,5 +170,16 @@ func (h homeHandler) ErrorHandler(err error, c echo.Context) {
 		Type: errorType,
 	}
 
-	server.Render(c, code, views.ErrorView(vm))
+	_ = server.Render(c, code, views.ErrorView(vm))
+}
+
+func writeResponse(response *echo.Response, reader io.Reader, headers http.Header) error {
+	for k, v := range headers {
+		for _, h := range v {
+			response.Header().Add(k, h)
+		}
+	}
+
+	_, err := io.Copy(response.Writer, reader)
+	return err
 }

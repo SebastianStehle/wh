@@ -2,6 +2,7 @@ package views
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 	"wh/domain/publish"
 )
@@ -40,16 +41,14 @@ func BuildEventsVM(entries []publish.StoreEntry) EventsVM {
 			Entry: entry,
 		}
 
-		requestType, ok := publish.GetRequestType(&entry)
-		if ok {
+		if publish.HasRequestBody(&entry) {
 			source := fmt.Sprintf("/buckets/%s/request", entry.RequestId)
-			entryVm.RequestEditor = getEditorInfo(requestType, source)
+			entryVm.RequestEditor = getEditorInfo(entry.Request.Headers, source)
 		}
 
-		responseType, ok := publish.GetResponseType(&entry)
-		if ok {
+		if publish.HasResponseBody(&entry) {
 			source := fmt.Sprintf("/buckets/%s/response", entry.RequestId)
-			entryVm.ResponseEditor = getEditorInfo(responseType, source)
+			entryVm.ResponseEditor = getEditorInfo(entry.Response.Headers, source)
 		}
 
 		vms = append(vms, entryVm)
@@ -58,8 +57,13 @@ func BuildEventsVM(entries []publish.StoreEntry) EventsVM {
 	return EventsVM{Entries: vms}
 }
 
-func getEditorInfo(contentType string, source string) *EditorInfo {
-	parts := strings.Split(contentType, ";")
+func getEditorInfo(header http.Header, source string) *EditorInfo {
+	t := header.Get("Content-Type")
+	if t == "" {
+		return nil
+	}
+
+	parts := strings.Split(t, ";")
 
 	mode := ""
 	switch parts[0] {

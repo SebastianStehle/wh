@@ -3,6 +3,8 @@
 # Build the application from source
 FROM golang:1.23-alpine AS build-stage
 
+RUN apk add --no-cache --update git build-base
+
 WORKDIR /app
 
 # Download all the dependencies
@@ -18,11 +20,13 @@ COPY . .
 # Compile templ
 RUN templ generate
 
-RUN CGO_ENABLED=0 GOOS=linux go build ./cmd/app/
+RUN CGO_ENABLED=1 GOOS=linux go build ./cmd/app/
 
 # Deploy the application binary into a lean image
 
 FROM alpine:3.9 AS build-release-stage
+
+RUN apk --no-cache add ca-certificates tzdata libc6-compat libgcc libstdc++
 
 WORKDIR /app
 

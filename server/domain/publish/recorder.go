@@ -16,7 +16,6 @@ type recorder struct {
 	requestWriter  io.WriteCloser
 	responseSize   int
 	responseWriter io.WriteCloser
-	status         Status
 	response       *HttpResponseStart
 	error          error
 }
