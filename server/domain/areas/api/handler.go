@@ -74,14 +74,27 @@ func (a apiHandler) Index(c echo.Context) error {
 		return err
 	}
 
-	listener := listener{
-		responseData:  make(chan publish.HttpData),
-		responseStart: make(chan publish.HttpResponseStart),
-		error:         make(chan publish.HttpError),
-		done:          make(chan bool),
-	}
+	responseData := make(chan publish.HttpResponseData)
+	responseStart := make(chan publish.HttpResponseStart)
+	tunnelDone := make(chan publish.HttpComplete)
+	tunnelError := make(chan publish.HttpError)
 
-	tunneled.Listen(EventOrigin, listener)
+	tunneled.OnResponseStart(EventOrigin, func(msg publish.HttpResponseStart) {
+		responseStart <- msg
+	})
+
+	tunneled.OnResponseData(EventOrigin, func(msg publish.HttpResponseData) {
+		responseData <- msg
+	})
+
+	tunneled.OnError(EventOrigin, func(msg publish.HttpError) {
+		tunnelError <- msg
+	})
+
+	tunneled.OnComplete(EventOrigin, func(msg publish.HttpComplete) {
+		tunnelDone <- msg
+	})
+
 	defer tunneled.Cancel(EventOrigin)
 
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 4*time.Hour)
@@ -109,16 +122,16 @@ func (a apiHandler) Index(c echo.Context) error {
 		case <-ctx.Done():
 			response.WriteHeader(http.StatusGatewayTimeout)
 			return nil
-		case <-listener.done:
+		case <-tunnelDone:
 			return nil
-		case msg := <-listener.error:
+		case msg := <-tunnelError:
 			if msg.Timeout {
 				response.WriteHeader(http.StatusGatewayTimeout)
 				return nil
 			} else {
 				return msg.Error
 			}
-		case msg := <-listener.responseStart:
+		case msg := <-responseStart:
 			for k, v := range msg.Headers {
 				for _, h := range v {
 					response.Header().Add(k, h)
@@ -127,7 +140,7 @@ func (a apiHandler) Index(c echo.Context) error {
 
 			response.WriteHeader(int(msg.Status))
 
-		case msg := <-listener.responseData:
+		case msg := <-responseData:
 			if len(msg.Data) > 0 {
 				_, err := response.Write(msg.Data)
 				if err != nil {
@@ -137,32 +150,6 @@ func (a apiHandler) Index(c echo.Context) error {
 			}
 		}
 	}
-}
-
-type listener struct {
-	responseStart chan publish.HttpResponseStart
-	responseData  chan publish.HttpData
-	error         chan publish.HttpError
-	done          chan bool
-}
-
-func (l listener) OnRequestData(publish.HttpData) {
-}
-
-func (l listener) OnComplete() {
-	l.done <- true
-}
-
-func (l listener) OnResponseStart(msg publish.HttpResponseStart) {
-	l.responseStart <- msg
-}
-
-func (l listener) OnResponseData(msg publish.HttpData) {
-	l.responseData <- msg
-}
-
-func (l listener) OnError(msg publish.HttpError) {
-	l.error <- msg
 }
 
 func splitEndpointAndPath(rawPath string) (string, string, bool) {

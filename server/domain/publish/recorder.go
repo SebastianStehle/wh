@@ -7,6 +7,10 @@ import (
 	"go.uber.org/zap"
 )
 
+var (
+	EventOrigin = 1001
+)
+
 type recorder struct {
 	buckets        Buckets
 	store          Store
@@ -20,7 +24,7 @@ type recorder struct {
 	error          error
 }
 
-func NewRecorder(request *TunneledRequest, store Store, buckets Buckets, logger *zap.Logger) RequestListener {
+func NewRecorder(request *TunneledRequest, store Store, buckets Buckets, logger *zap.Logger) *recorder {
 	if err := store.LogRequest(request.RequestId, request.Endpoint, request.Request); err != nil {
 		logger.Error("Failed to record request",
 			zap.Error(err),
@@ -35,7 +39,15 @@ func NewRecorder(request *TunneledRequest, store Store, buckets Buckets, logger 
 	}
 }
 
-func (l *recorder) OnRequestData(msg HttpData) {
+func (l *recorder) Listen(request *TunneledRequest) {
+	request.OnRequestData(EventOrigin, l.OnRequestData)
+	request.OnResponseStart(EventOrigin, l.OnResponseStart)
+	request.OnResponseData(EventOrigin, l.OnResponseData)
+	request.OnError(EventOrigin, l.OnError)
+	request.OnComplete(EventOrigin, l.OnComplete)
+}
+
+func (l *recorder) OnRequestData(msg HttpRequestData) {
 	data := msg.Data
 	if len(data) <= 0 {
 		return
@@ -70,7 +82,7 @@ func (l *recorder) OnResponseStart(msg HttpResponseStart) {
 	l.response = &msg
 }
 
-func (l *recorder) OnResponseData(msg HttpData) {
+func (l *recorder) OnResponseData(msg HttpResponseData) {
 	data := msg.Data
 	if len(data) <= 0 {
 		return
@@ -107,7 +119,7 @@ func (l *recorder) OnError(msg HttpError) {
 	l.error = msg.Error
 }
 
-func (l *recorder) OnComplete() {
+func (l *recorder) OnComplete(msg HttpComplete) {
 	l.closeRequestWriter()
 	l.closeResponseWriter()
 

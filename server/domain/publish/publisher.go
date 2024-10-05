@@ -41,7 +41,7 @@ func NewPublisher(store Store, buckets Buckets, logger *zap.Logger) Publisher {
 }
 
 func (p *publisher) Unsubscribe(endpoint string) {
-	// Ensure that only a single thread can access the thread
+	// Ensure that only a single thread can access the map
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
@@ -49,6 +49,10 @@ func (p *publisher) Unsubscribe(endpoint string) {
 }
 
 func (p *publisher) Subscribe(endpoint string, handler func(request *TunneledRequest)) error {
+	// Ensure that only a single thread can access the map
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
 	registration, ok := p.endpoints[endpoint]
 	if ok || registration != nil {
 		return ErrAlreadyRegistered
@@ -67,7 +71,11 @@ func (p *publisher) ForwardRequest(endpoint string, request HttpRequestStart) (*
 	}
 
 	req := NewTunneledRequest(endpoint, requestId, request, p.logger)
-	req.Listen(1001, NewRecorder(req, p.store, p.buckets, p.logger))
+
+	// Record the request details and store them in a file and database.
+	rec := NewRecorder(req, p.store, p.buckets, p.logger)
+	rec.Listen(req)
+
 	// Publish the request first, so that we can receive events.
 	handler(req)
 
@@ -75,7 +83,7 @@ func (p *publisher) ForwardRequest(endpoint string, request HttpRequestStart) (*
 }
 
 func (p *publisher) getHandler(endpoint string) (func(*TunneledRequest), error) {
-	// Ensure that only a single thread can access the thread
+	// Ensure that only a single thread can access the map
 	p.lock.Lock()
 	defer p.lock.Unlock()
 

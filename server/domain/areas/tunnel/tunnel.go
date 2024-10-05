@@ -17,47 +17,6 @@ var (
 
 type Stream = grpc.BidiStreamingServer[generated.ClientMessage, generated.ServerMessage]
 
-type sender struct {
-	clientError   chan *generated.TransportError
-	complete      chan tunnelMessage[complete]
-	done          chan bool
-	requestData   chan tunnelMessage[publish.HttpData]
-	requestStart  chan *publish.TunneledRequest
-	responseData  chan *generated.ResponseData
-	responseStart chan *generated.ResponseStart
-	serverError   chan tunnelMessage[publish.HttpError]
-}
-
-type complete struct{}
-
-type tunnelMessage[T any] struct {
-	request *publish.TunneledRequest
-	payload T
-}
-
-type listener struct {
-	sender  sender
-	request *publish.TunneledRequest
-}
-
-func (l listener) OnResponseStart(msg publish.HttpResponseStart) {
-}
-
-func (l listener) OnResponseData(msg publish.HttpData) {
-}
-
-func (l listener) OnRequestData(msg publish.HttpData) {
-	l.sender.requestData <- tunnelMessage[publish.HttpData]{request: l.request, payload: msg}
-}
-
-func (l listener) OnError(msg publish.HttpError) {
-	l.sender.serverError <- tunnelMessage[publish.HttpError]{request: l.request, payload: msg}
-}
-
-func (l listener) OnComplete() {
-	l.sender.complete <- tunnelMessage[complete]{request: l.request}
-}
-
 type tunnelServer struct {
 	logger    *zap.Logger
 	publisher publish.Publisher
@@ -72,22 +31,21 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 	s.logger.Info("Tunnel opened by client.")
 
 	// Use one channel per type to have a type safe behavior.
-	sender := sender{
-		clientError:   make(chan *generated.TransportError),
-		complete:      make(chan tunnelMessage[complete]),
-		requestData:   make(chan tunnelMessage[publish.HttpData]),
-		requestStart:  make(chan *publish.TunneledRequest),
-		responseData:  make(chan *generated.ResponseData),
-		responseStart: make(chan *generated.ResponseStart),
-		serverError:   make(chan tunnelMessage[publish.HttpError]),
-	}
+	clientError := make(chan *generated.TransportError)
+	requestData := make(chan publish.HttpRequestData)
+	requestStart := make(chan *publish.TunneledRequest)
+	responseData := make(chan *generated.ResponseData)
+	responseStart := make(chan *generated.ResponseStart)
+	tunnelDone := make(chan publish.HttpComplete)
+	tunnelError := make(chan publish.HttpError)
+	unsubscribed := make(chan bool)
 
 	endpoint := ""
 	defer func() {
 		s.logger.Info("Tunnel closes by client.")
 
 		// Ensure that the goroutine completes when we are done with the tunnel.
-		sender.done <- true
+		unsubscribed <- true
 		s.publisher.Unsubscribe(endpoint)
 	}()
 
@@ -100,11 +58,11 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 
 		for {
 			select {
-			case <-sender.done:
+			case <-unsubscribed:
 				return
-			case msg := <-sender.complete:
-				delete(requests, msg.request.RequestId)
-			case msg := <-sender.requestStart:
+			case msg := <-tunnelDone:
+				delete(requests, msg.Request.RequestId)
+			case msg := <-requestStart:
 				requests[msg.RequestId] = msg
 				request := msg.Request
 
@@ -130,35 +88,38 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 					zap.String("input.path", request.Path),
 				)
 
-			case msg := <-sender.requestData:
+			case msg := <-requestData:
 				m := &generated.ServerMessage{
 					TestMessageType: &generated.ServerMessage_RequestData{
 						RequestData: &generated.RequestData{
-							RequestId: &msg.request.RequestId,
-							Data:      msg.payload.Data,
-							Completed: &msg.payload.Completed,
+							RequestId: &msg.Request.RequestId,
+							Data:      msg.Data,
+							Completed: &msg.Completed,
 						},
 					},
 				}
 
-				s.sendMessage(stream, msg.request, m, true)
+				s.sendMessage(stream, msg.Request, m, true)
 
-			case msg := <-sender.serverError:
-				errorText := msg.payload.Error.Error()
+			case msg := <-tunnelError:
+				errorText := ""
+				if msg.Error != nil {
+					errorText = msg.Error.Error()
+				}
 
 				m := &generated.ServerMessage{
 					TestMessageType: &generated.ServerMessage_Error{
 						Error: &generated.TransportError{
-							RequestId: &msg.request.RequestId,
+							RequestId: &msg.Request.RequestId,
 							Error:     &errorText,
-							Timeout:   &msg.payload.Timeout,
+							Timeout:   &msg.Timeout,
 						},
 					},
 				}
 
-				s.sendMessage(stream, msg.request, m, false)
+				s.sendMessage(stream, msg.Request, m, false)
 
-			case msg := <-sender.responseStart:
+			case msg := <-responseStart:
 				t, ok := requests[msg.GetRequestId()]
 				if !ok {
 					s.logUnknownRequest(msg.GetRequestId())
@@ -167,7 +128,7 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 
 				t.EmitResponse(EventOrigin, fromHeaders(msg.GetHeaders()), msg.GetStatus())
 
-			case msg := <-sender.responseData:
+			case msg := <-responseData:
 				t, ok := requests[msg.GetRequestId()]
 				if !ok {
 					s.logUnknownRequest(msg.GetRequestId())
@@ -176,7 +137,7 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 
 				t.EmitResponseData(EventOrigin, msg.GetData(), msg.GetCompleted())
 
-			case msg := <-sender.clientError:
+			case msg := <-clientError:
 				t, ok := requests[msg.GetRequestId()]
 				if !ok {
 					s.logUnknownRequest(msg.GetRequestId())
@@ -210,11 +171,20 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 
 			endpoint = subscribeMessage.GetEndpoint()
 
-			if err := s.publisher.Subscribe(endpoint, func(tunneled *publish.TunneledRequest) {
-				sender.requestStart <- tunneled
+			if err := s.publisher.Subscribe(endpoint, func(request *publish.TunneledRequest) {
+				requestStart <- request
 
-				listener := listener{sender: sender, request: tunneled}
-				tunneled.Listen(EventOrigin, listener)
+				request.OnRequestData(EventOrigin, func(msg publish.HttpRequestData) {
+					requestData <- msg
+				})
+
+				request.OnError(EventOrigin, func(msg publish.HttpError) {
+					tunnelError <- msg
+				})
+
+				request.OnComplete(EventOrigin, func(msg publish.HttpComplete) {
+					tunnelDone <- msg
+				})
 			}); err != nil {
 				return err
 			}
@@ -227,17 +197,17 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 
 		start := message.GetResponseStart()
 		if start != nil {
-			sender.responseStart <- start
+			responseStart <- start
 		}
 
 		data := message.GetResponseData()
 		if data != nil {
-			sender.responseData <- data
+			responseData <- data
 		}
 
 		e := message.GetError()
 		if e != nil {
-			sender.clientError <- e
+			clientError <- e
 		}
 	}
 }
