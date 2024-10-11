@@ -45,7 +45,13 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 		s.logger.Info("Tunnel closes by client.")
 
 		// Ensure that the goroutine completes when we are done with the tunnel.
-		unsubscribed <- true
+		// There is no guarantee that the channel stil has receivers, if it has already been completed.
+		select {
+		case unsubscribed <- true:
+		default:
+			return
+		}
+
 		s.publisher.Unsubscribe(endpoint)
 	}()
 
@@ -172,18 +178,38 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 			endpoint = subscribeMessage.GetEndpoint()
 
 			if err := s.publisher.Subscribe(endpoint, func(request *publish.TunneledRequest) {
-				requestStart <- request
+				// There is no guarantee that the channel stil has receivers, if it has already been completed.
+				select {
+				case requestStart <- request:
+				default:
+					return
+				}
 
 				request.OnRequestData(EventOrigin, func(msg publish.HttpRequestData) {
-					requestData <- msg
+					// There is no guarantee that the channel stil has receivers, if it has already been completed.
+					select {
+					case requestData <- msg:
+					default:
+						return
+					}
 				})
 
 				request.OnError(EventOrigin, func(msg publish.HttpError) {
-					tunnelError <- msg
+					// There is no guarantee that the channel stil has receivers, if it has already been completed.
+					select {
+					case tunnelError <- msg:
+					default:
+						return
+					}
 				})
 
 				request.OnComplete(EventOrigin, func(msg publish.HttpComplete) {
-					tunnelDone <- msg
+					// There is no guarantee that the channel stil has receivers, if it has already been completed.
+					select {
+					case tunnelDone <- msg:
+					default:
+						return
+					}
 				})
 			}); err != nil {
 				return err
@@ -197,17 +223,32 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 
 		start := message.GetResponseStart()
 		if start != nil {
-			responseStart <- start
+			// There is no guarantee that the channel stil has receivers, if it has already been completed.
+			select {
+			case responseStart <- start:
+			default:
+				return nil
+			}
 		}
 
 		data := message.GetResponseData()
 		if data != nil {
-			responseData <- data
+			// There is no guarantee that the channel stil has receivers, if it has already been completed.
+			select {
+			case responseData <- data:
+			default:
+				return nil
+			}
 		}
 
 		e := message.GetError()
 		if e != nil {
-			clientError <- e
+			// There is no guarantee that the channel stil has receivers, if it has already been completed.
+			select {
+			case clientError <- e:
+			default:
+				return nil
+			}
 		}
 	}
 }

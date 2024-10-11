@@ -8,8 +8,8 @@ require (
 	github.com/gorilla/securecookie v1.1.2
 	github.com/labstack/echo/v4 v4.11.4
 	github.com/labstack/gommon v0.4.2
+	github.com/mattn/go-sqlite3 v1.14.23
 	github.com/nicksnyder/go-i18n/v2 v2.4.0
-	github.com/soheilhy/cmux v0.1.5
 	github.com/vrecan/death/v3 v3.0.3
 	google.golang.org/grpc v1.66.0
 )
@@ -17,7 +17,6 @@ require (
 require (
 	github.com/golang-jwt/jwt v3.2.2+incompatible // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-sqlite3 v1.14.23 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	golang.org/x/time v0.5.0 // indirect
@@ -46,7 +45,7 @@ require (
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.26.0 // indirect
 	golang.org/x/exp v0.0.0-20240119083558-1b970713d09a // indirect
-	golang.org/x/net v0.28.0 // indirect
+	golang.org/x/net v0.28.0
 	golang.org/x/sys v0.23.0 // indirect
 	golang.org/x/text v0.17.0
 	google.golang.org/protobuf v1.34.1

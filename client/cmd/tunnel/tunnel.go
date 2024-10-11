@@ -9,6 +9,7 @@ import (
 	"wh/cli/api/tunnel"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
 )
 
 var TunnelCmd = &cobra.Command{
@@ -74,85 +75,155 @@ for example:
 		fmt.Println("-------------")
 		fmt.Println()
 
+		serverError := make(chan *tunnel.TransportError)
+		requestStart := make(chan *tunnel.RequestStart)
+		requestData := make(chan *tunnel.RequestData)
+		responseStart := make(chan HttpResponseStart)
+		responseData := make(chan HttpResponseData)
+		tunnelError := make(chan HttpError)
+
 		ch := make(chan interface{})
 		go func() {
 			// This map is only used in this goroutine, therefore we don't have to send updates.
-			requests := make(map[string]*tunneledRequest)
+			requests := make(map[string]*TunneledRequest)
 
-			for e := range ch {
-				switch m := e.(type) {
-				case tunnel.RequestStart:
-					req, _ := newTunneledRequest(ctx, localBase, &m, ch)
-					if err != nil {
-						printStatus(m.GetMethod(), m.GetPath(), "Failed with error: %s", err.Error())
-						break
-					}
+			for {
+				select {
+				case msg := <-requestStart:
+					request := NewTunneledRequest(localBase,
+						msg.GetRequestId(),
+						msg.GetMethod(),
+						msg.GetPath(),
+						transportToHttp(msg.GetHeaders()))
 
-					printStatus(req.method, req.path, "Started")
+					printStatus(request, "Started")
+
+					// Run the request in another go-routine.
+					go request.Run(ctx, 1*time.Hour)
 
 					// Register the request, so we can send updates to it.
-					requests[req.requestId] = req
+					requests[request.RequestId] = request
 
-				case tunnel.TransportError:
-					req, ok := requests[m.GetRequestId()]
+				case msg := <-requestData:
+					req, ok := requests[msg.GetRequestId()]
 					if !ok {
 						break
 					}
 
-					req.cancel()
+					req.AppendRequestData(msg.GetData(), msg.GetCompleted())
 
-				case tunnel.RequestData:
-					req, ok := requests[m.GetRequestId()]
+				case msg := <-responseStart:
+					m := &tunnel.ClientMessage{
+						TestMessageType: &tunnel.ClientMessage_ResponseStart{
+							ResponseStart: &tunnel.ResponseStart{
+								RequestId: &msg.Request.RequestId,
+								Headers:   headersToGrpc(msg.Headers),
+								Status:    &msg.Status,
+							},
+						},
+					}
+
+					sendResponse(msg.Request, m, stream, requests)
+
+				case msg := <-responseData:
+					_, ok := requests[msg.Request.RequestId]
 					if !ok {
 						break
 					}
 
-					req.appendRequestData(m.GetData(), m.GetCompleted())
-
-				case responseMessage:
-					if m.completed {
-						delete(requests, m.request.requestId)
+					m := &tunnel.ClientMessage{
+						TestMessageType: &tunnel.ClientMessage_ResponseData{
+							ResponseData: &tunnel.ResponseData{
+								RequestId: &msg.Request.RequestId,
+								Data:      msg.Data,
+								Completed: &msg.Completed,
+							},
+						},
 					}
 
-					err = stream.Send(m.response)
-					if err != nil {
-						fmt.Printf("Error: Failed to send response to server. %v\n", err)
-					} else if m.status != "" {
-						printStatus(m.request.method, m.request.path, m.status)
+					if msg.Completed {
+						delete(requests, msg.Request.RequestId)
 					}
+
+					sendResponse(msg.Request, m, stream, requests)
+
+				case msg := <-tunnelError:
+					_, ok := requests[msg.Request.RequestId]
+					if !ok {
+						break
+					}
+
+					m := &tunnel.ClientMessage{
+						TestMessageType: &tunnel.ClientMessage_Error{
+							Error: &tunnel.TransportError{
+								RequestId: &msg.Request.RequestId,
+								Error:     errorToGrpc(msg.Error),
+								Timeout:   &msg.Timeout,
+							},
+						},
+					}
+
+					sendResponse(msg.Request, m, stream, requests)
 				}
 			}
 		}()
 
 		for {
-			serverMessage, err := stream.Recv()
-			if err != nil {
-				fmt.Printf("Error: Connection closed by server: %v.\n", err)
+			serverMessage, e := stream.Recv()
+			if e != nil {
+				fmt.Printf("Error: Connection closed by server: %v.\n", e)
 				return
 			}
 
-			requestStart := serverMessage.GetRequestStart()
-			if requestStart != nil {
-				ch <- *requestStart
+			start := serverMessage.GetRequestStart()
+			if start != nil {
+				select {
+				case requestStart <- start:
+				default:
+				}
 			}
 
-			requestData := serverMessage.GetRequestData()
-			if requestData != nil {
-				ch <- *requestData
+			data := serverMessage.GetRequestData()
+			if data != nil {
+				select {
+				case requestData <- data:
+				default:
+				}
 			}
 
-			requestError := serverMessage.GetError()
-			if requestError != nil {
-				ch <- *requestError
+			e := serverMessage.GetError()
+			if e != nil {
+				select {
+				case serverError <- e:
+				default:
+				}
 			}
 		}
 	},
 }
 
-func printStatus(method string, path string, format string, a ...any) {
+func sendResponse(request *TunneledRequest, m *tunnel.ClientMessage, stream grpc.BidiStreamingClient[tunnel.ClientMessage, tunnel.ServerMessage], requests map[string]*TunneledRequest) {
+	err := stream.Send(m)
+	if err != nil {
+		printStatus(request, "Error: Failed to send response to server. %v\n", err)
+
+		// Remove the request first, consecutive cancellations are just ignored.
+		delete(requests, request.RequestId)
+		request.Cancel()
+	}
+}
+
+func printStatus(request *TunneledRequest, format string, a ...any) {
+	requestPath := request.Path
+
+	// Both paths are technically not the same, but it looks weird.
+	if requestPath == "" {
+		requestPath = "/"
+	}
+
 	prefix := fmt.Sprintf(" - %s %s ",
-		formatCell(method, 10),
-		formatCell(path, 30))
+		formatCell(request.Method, 10),
+		formatCell(requestPath, 30))
 
 	fmt.Println(prefix + fmt.Sprintf(format, a...))
 }

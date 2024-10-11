@@ -2,173 +2,119 @@ package tunnel
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
-	"wh/cli/api/tunnel"
 )
 
-type responseMessage struct {
-	completed bool
-	request   *tunneledRequest
-	response  *tunnel.ClientMessage
-	status    string
+type TunneledRequest struct {
+	cancel          context.CancelFunc
+	completed       bool
+	Headers         http.Header
+	Method          string
+	onError         []func(msg HttpError)
+	onResponseData  []func(msg HttpResponseData)
+	onResponseStart []func(msg HttpResponseStart)
+	Path            string
+	requestBody     *requestReader
+	RequestId       string
+	Url             string
 }
 
-type tunneledRequest struct {
-	cancel      context.CancelFunc
-	method      string
-	path        string
-	requestBody *requestReader
-	request     *http.Request
-	requestId   string
+func NewTunneledRequest(localBase string, requestId string, method string, path string, headers http.Header) *TunneledRequest {
+	request := &TunneledRequest{
+		Headers:         headers,
+		Method:          method,
+		onError:         make([]func(msg HttpError), 1),
+		onResponseData:  make([]func(msg HttpResponseData), 1),
+		onResponseStart: make([]func(msg HttpResponseStart), 1),
+		Path:            path,
+		requestBody:     newRequestReader(),
+		RequestId:       requestId,
+		Url:             combineUrl(localBase, path),
+	}
+
+	return request
 }
 
-func newTunneledRequest(ctx context.Context, localBase string, start *tunnel.RequestStart, sender chan interface{}) (*tunneledRequest, error) {
-	requestReader := newRequestReader()
-
-	//goland:noinspection GoVetLostCancel
-	// Will be cancelled in the go-routine
-	ctx, cancel := context.WithTimeout(ctx, 4*time.Hour)
-	defer cancel()
-
-	localUrl := combineUrl(localBase, start.GetPath())
-
-	httpReq, err := http.NewRequestWithContext(ctx, start.GetMethod(), localUrl, requestReader)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	for header, v := range start.GetHeaders() {
-		for _, value := range v.GetValues() {
-			httpReq.Header.Add(header, value)
-		}
-	}
-
-	request := &tunneledRequest{
-		method:      start.GetMethod(),
-		path:        start.GetPath(),
-		requestBody: requestReader,
-		requestId:   start.GetRequestId(),
-		request:     httpReq,
-		cancel:      cancel,
-	}
-
-	go func() {
-		// Cancel the actual request, but we cannot do it in the factory method and there ignore lint.
-		defer cancel()
-
-		request.run(ctx, sender)
-	}()
-
-	return request, nil
-}
-
-func (r *tunneledRequest) appendRequestData(data []byte, completed bool) {
+func (r *TunneledRequest) AppendRequestData(data []byte, completed bool) {
 	r.requestBody.AppendData(data, completed)
 }
 
-func (r *tunneledRequest) run(ctx context.Context, sender chan interface{}) {
-	response, err := http.DefaultClient.Do(r.request)
-	if err != nil {
-		// Just send errors back to the sender go-routine, because we can't handle them here.
-		sender <- r.buildErrorResponse(err, fmt.Sprintf("Failed to send tunneledRequest %s", err))
+func (r *TunneledRequest) Cancel() {
+	if r.cancel == nil {
 		return
 	}
 
-	status := int32(response.StatusCode)
+	r.cancel()
+}
 
-	h := headersToLocal(response.Header)
-	sender <- responseMessage{
-		request: r,
-		response: &tunnel.ClientMessage{
-			TestMessageType: &tunnel.ClientMessage_ResponseStart{
-				ResponseStart: &tunnel.ResponseStart{
-					RequestId: &r.requestId,
-					Headers:   h,
-					Status:    &status,
-				},
-			},
-		},
+func (r *TunneledRequest) Run(ctx context.Context, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	r.cancel = cancel
+
+	request, err := http.NewRequestWithContext(ctx, r.Method, r.Url, r.requestBody)
+	if err != nil {
+		r.emitError(err, false)
+		return
+	}
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		r.emitError(err, false)
+		return
+	}
+
+	if len(r.onResponseStart) > 0 {
+		msg := HttpResponseStart{Request: r, Headers: response.Header, Status: int32(response.StatusCode)}
+		for _, r := range r.onResponseStart {
+			r(msg)
+		}
 	}
 
 	body := response.Body
 	for {
 		select {
 		case <-ctx.Done():
-			// Stop reading when the context has been cancelled.
+			r.emitError(nil, true)
 			return
 
 		default:
 			buffer := make([]byte, 4*1024)
 			n, err := body.Read(buffer)
 			if err != nil && err != io.EOF {
-				// Just send errors back to the sender go-routine, because we can't handle them here.
-				sender <- r.buildErrorResponse(err, "Failed to read from tunneledRequest")
+				r.emitError(err, false)
 				return
 			}
 
 			complete := err == io.EOF
 
-			statusText := ""
-			if complete {
-				statusText = fmt.Sprintf("%d %s", status, http.StatusText(int(status)))
-			}
-
-			sender <- responseMessage{
-				completed: complete,
-				request:   r,
-				response: &tunnel.ClientMessage{
-					TestMessageType: &tunnel.ClientMessage_ResponseData{
-						ResponseData: &tunnel.ResponseData{
-							RequestId: &r.requestId,
-							Data:      buffer[0:n],
-							Completed: &complete,
-						},
-					},
-				},
-				status: statusText,
+			msg := HttpResponseData{Request: r, Data: buffer[0:n], Completed: complete}
+			for _, r := range r.onResponseData {
+				r(msg)
 			}
 
 			if complete {
+				r.completed = true
 				return
 			}
 		}
 	}
 }
 
-func (r *tunneledRequest) buildErrorResponse(err error, statusText string) responseMessage {
-	errMsg := err.Error()
-
-	fmt.Println()
-	fmt.Print(statusText)
-	fmt.Println()
-
-	timeout := false
-	return responseMessage{
-		request: r,
-		response: &tunnel.ClientMessage{
-			TestMessageType: &tunnel.ClientMessage_Error{
-				Error: &tunnel.TransportError{
-					RequestId: &r.requestId,
-					Error:     &errMsg,
-					Timeout:   &timeout,
-				},
-			},
-		},
-		completed: true,
-		status:    statusText,
-	}
-}
-
-func headersToLocal(headers http.Header) map[string]*tunnel.HttpHeaderValues {
-	result := make(map[string]*tunnel.HttpHeaderValues, len(headers))
-
-	for header, v := range headers {
-		result[header] = &tunnel.HttpHeaderValues{Values: v}
+func (r *TunneledRequest) emitError(err error, timeout bool) {
+	if !r.completed {
+		return
 	}
 
-	return result
+	r.completed = true
+
+	if len(r.onError) > 0 {
+		msg := HttpError{Request: r, Error: err, Timeout: timeout}
+		for _, r := range r.onError {
+			r(msg)
+		}
+	}
 }

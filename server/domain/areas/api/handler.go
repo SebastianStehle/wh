@@ -74,28 +74,45 @@ func (a apiHandler) Index(c echo.Context) error {
 		return err
 	}
 
+	// Also cancel the request in case something goes wrong to forward the status to the client if not done yet.
+	defer tunneled.Cancel(EventOrigin)
+
 	responseData := make(chan publish.HttpResponseData)
 	responseStart := make(chan publish.HttpResponseStart)
 	tunnelDone := make(chan publish.HttpComplete)
 	tunnelError := make(chan publish.HttpError)
 
 	tunneled.OnResponseStart(EventOrigin, func(msg publish.HttpResponseStart) {
-		responseStart <- msg
+		// There is no guarantee that the channel stil has receivers, if events arrive in the wrong order somehow.
+		select {
+		case responseStart <- msg:
+		default:
+		}
 	})
 
 	tunneled.OnResponseData(EventOrigin, func(msg publish.HttpResponseData) {
-		responseData <- msg
+		// There is no guarantee that the channel stil has receivers, if events arrive in the wrong order somehow.
+		select {
+		case responseData <- msg:
+		default:
+		}
 	})
 
 	tunneled.OnError(EventOrigin, func(msg publish.HttpError) {
-		tunnelError <- msg
+		// There is no guarantee that the channel stil has receivers, if events arrive in the wrong order somehow.
+		select {
+		case tunnelError <- msg:
+		default:
+		}
 	})
 
 	tunneled.OnComplete(EventOrigin, func(msg publish.HttpComplete) {
-		tunnelDone <- msg
+		// There is no guarantee that the channel stil has receivers, if it has already been completed.
+		select {
+		case tunnelDone <- msg:
+		default:
+		}
 	})
-
-	defer tunneled.Cancel(EventOrigin)
 
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 4*time.Hour)
 	defer cancel()
@@ -122,8 +139,6 @@ func (a apiHandler) Index(c echo.Context) error {
 		case <-ctx.Done():
 			response.WriteHeader(http.StatusGatewayTimeout)
 			return nil
-		case <-tunnelDone:
-			return nil
 		case msg := <-tunnelError:
 			if msg.Timeout {
 				response.WriteHeader(http.StatusGatewayTimeout)
@@ -148,6 +163,8 @@ func (a apiHandler) Index(c echo.Context) error {
 					return err
 				}
 			}
+		case <-tunnelDone:
+			return nil
 		}
 	}
 }
