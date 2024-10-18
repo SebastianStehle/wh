@@ -9,7 +9,6 @@ import (
 	"wh/cli/api/tunnel"
 
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc"
 )
 
 var TunnelCmd = &cobra.Command{
@@ -75,14 +74,14 @@ for example:
 		fmt.Println("-------------")
 		fmt.Println()
 
-		serverError := make(chan *tunnel.TransportError)
-		requestStart := make(chan *tunnel.RequestStart)
+		clientError := make(chan HttpError)
 		requestData := make(chan *tunnel.RequestData)
-		responseStart := make(chan HttpResponseStart)
+		requestStart := make(chan *tunnel.RequestStart)
 		responseData := make(chan HttpResponseData)
-		tunnelError := make(chan HttpError)
+		responseStart := make(chan HttpResponseStart)
+		serverError := make(chan *tunnel.TransportError)
+		unregister := make(chan *TunneledRequest)
 
-		ch := make(chan interface{})
 		go func() {
 			// This map is only used in this goroutine, therefore we don't have to send updates.
 			requests := make(map[string]*TunneledRequest)
@@ -94,39 +93,68 @@ for example:
 						msg.GetRequestId(),
 						msg.GetMethod(),
 						msg.GetPath(),
-						transportToHttp(msg.GetHeaders()))
+						fromHeaders(msg.GetHeaders()))
 
 					printStatus(request, "Started")
 
-					// Run the request in another go-routine.
-					go request.Run(ctx, 1*time.Hour)
+					request.OnResponseStart(func(msg HttpResponseStart) {
+						responseStart <- msg
+					})
 
-					// Register the request, so we can send updates to it.
+					request.OnResponseData(func(msg HttpResponseData) {
+						responseData <- msg
+					})
+
+					request.OnError(func(msg HttpError) {
+						clientError <- msg
+					})
+
+					// Register the request immediately, because the actual consecutive request might arrive immediately.
 					requests[request.RequestId] = request
 
+					// Run the request in parallel to other requests.
+					go func() {
+						defer func() {
+							unregister <- request
+						}()
+
+						request.Run(ctx, 1*time.Hour)
+					}()
+
+				case msg := <-unregister:
+					// There are no weak refs in golang, therefore remove the completed request.
+					delete(requests, msg.RequestId)
+
 				case msg := <-requestData:
-					req, ok := requests[msg.GetRequestId()]
+					t, ok := requests[msg.GetRequestId()]
 					if !ok {
 						break
 					}
 
-					req.AppendRequestData(msg.GetData(), msg.GetCompleted())
+					t.WriteRequestData(msg.GetData(), msg.GetCompleted())
 
 				case msg := <-responseStart:
+					t, ok := requests[msg.Request.RequestId]
+					if !ok {
+						break
+					}
+
 					m := &tunnel.ClientMessage{
 						TestMessageType: &tunnel.ClientMessage_ResponseStart{
 							ResponseStart: &tunnel.ResponseStart{
-								RequestId: &msg.Request.RequestId,
-								Headers:   headersToGrpc(msg.Headers),
+								RequestId: &t.RequestId,
+								Headers:   toHeaders(msg.Headers),
 								Status:    &msg.Status,
 							},
 						},
 					}
 
-					sendResponse(msg.Request, m, stream, requests)
+					if err := stream.Send(m); err != nil {
+						printStatus(t, "Error: Failed to send request to server. %v", err)
+					}
 
 				case msg := <-responseData:
-					_, ok := requests[msg.Request.RequestId]
+					t, ok := requests[msg.Request.RequestId]
 					if !ok {
 						break
 					}
@@ -134,21 +162,19 @@ for example:
 					m := &tunnel.ClientMessage{
 						TestMessageType: &tunnel.ClientMessage_ResponseData{
 							ResponseData: &tunnel.ResponseData{
-								RequestId: &msg.Request.RequestId,
+								RequestId: &t.RequestId,
 								Data:      msg.Data,
 								Completed: &msg.Completed,
 							},
 						},
 					}
 
-					if msg.Completed {
-						delete(requests, msg.Request.RequestId)
+					if err := stream.Send(m); err != nil {
+						printStatus(t, "Error: Failed to send request to server. %v", err)
 					}
 
-					sendResponse(msg.Request, m, stream, requests)
-
-				case msg := <-tunnelError:
-					_, ok := requests[msg.Request.RequestId]
+				case msg := <-clientError:
+					t, ok := requests[msg.Request.RequestId]
 					if !ok {
 						break
 					}
@@ -156,61 +182,54 @@ for example:
 					m := &tunnel.ClientMessage{
 						TestMessageType: &tunnel.ClientMessage_Error{
 							Error: &tunnel.TransportError{
-								RequestId: &msg.Request.RequestId,
-								Error:     errorToGrpc(msg.Error),
+								RequestId: &t.RequestId,
+								Error:     toError(msg.Error),
 								Timeout:   &msg.Timeout,
 							},
 						},
 					}
 
-					sendResponse(msg.Request, m, stream, requests)
+					if err := stream.Send(m); err != nil {
+						printStatus(t, "Error: Failed with client error. %v", msg.Error)
+					}
+
+				case msg := <-serverError:
+					t, ok := requests[msg.GetRequestId()]
+					if !ok {
+						break
+					}
+
+					t.cancel()
+
+					if msg.GetTimeout() {
+						printStatus(t, "Error: Failed with server timeout")
+					} else {
+						printStatus(t, "Error: Failed with server error. %s", msg.GetError())
+					}
 				}
 			}
 		}()
 
 		for {
-			serverMessage, e := stream.Recv()
-			if e != nil {
-				fmt.Printf("Error: Connection closed by server: %v.\n", e)
+			serverMessage, err := stream.Recv()
+			if err != nil {
+				fmt.Printf("Error: Connection closed by server: %v.\n", err)
 				return
 			}
 
-			start := serverMessage.GetRequestStart()
-			if start != nil {
-				select {
-				case requestStart <- start:
-				default:
-				}
+			if s := serverMessage.GetRequestStart(); s != nil {
+				requestStart <- s
 			}
 
-			data := serverMessage.GetRequestData()
-			if data != nil {
-				select {
-				case requestData <- data:
-				default:
-				}
+			if d := serverMessage.GetRequestData(); d != nil {
+				requestData <- d
 			}
 
-			e := serverMessage.GetError()
-			if e != nil {
-				select {
-				case serverError <- e:
-				default:
-				}
+			if e := serverMessage.GetError(); e != nil {
+				serverError <- e
 			}
 		}
 	},
-}
-
-func sendResponse(request *TunneledRequest, m *tunnel.ClientMessage, stream grpc.BidiStreamingClient[tunnel.ClientMessage, tunnel.ServerMessage], requests map[string]*TunneledRequest) {
-	err := stream.Send(m)
-	if err != nil {
-		printStatus(request, "Error: Failed to send response to server. %v\n", err)
-
-		// Remove the request first, consecutive cancellations are just ignored.
-		delete(requests, request.RequestId)
-		request.Cancel()
-	}
 }
 
 func printStatus(request *TunneledRequest, format string, a ...any) {

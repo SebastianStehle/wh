@@ -16,7 +16,6 @@ type registration[T any] struct {
 type TunneledRequest struct {
 	lock            sync.RWMutex
 	logger          *zap.Logger
-	onComplete      []registration[func(HttpComplete)]
 	onError         []registration[func(HttpError)]
 	onRequestData   []registration[func(HttpRequestData)]
 	onResponseData  []registration[func(HttpResponseData)]
@@ -30,21 +29,15 @@ type TunneledRequest struct {
 func NewTunneledRequest(endpoint string, requestId string, request HttpRequestStart, logger *zap.Logger) *TunneledRequest {
 	return &TunneledRequest{
 		Endpoint:        endpoint,
-		onComplete:      make([]registration[func(HttpComplete)], 0),
-		onError:         make([]registration[func(HttpError)], 0),
-		onRequestData:   make([]registration[func(HttpRequestData)], 0),
-		onResponseData:  make([]registration[func(HttpResponseData)], 0),
-		onResponseStart: make([]registration[func(HttpResponseStart)], 0),
+		onError:         make([]registration[func(HttpError)], 0, 2),
+		onRequestData:   make([]registration[func(HttpRequestData)], 0, 2),
+		onResponseData:  make([]registration[func(HttpResponseData)], 0, 2),
+		onResponseStart: make([]registration[func(HttpResponseStart)], 0, 2),
 		logger:          logger,
 		Request:         request,
 		RequestId:       requestId,
 		Status:          StatusRequestStarted,
 	}
-}
-
-func (t *TunneledRequest) OnComplete(origin int, action func(HttpComplete)) {
-	r := registration[func(HttpComplete)]{origin: origin, action: action}
-	t.onComplete = append(t.onComplete, r)
 }
 
 func (t *TunneledRequest) OnError(origin int, action func(HttpError)) {
@@ -117,6 +110,10 @@ func (t *TunneledRequest) EmitResponseData(origin int, data []byte, completed bo
 		return
 	}
 
+	if completed {
+		t.Status = StatusCompleted
+	}
+
 	if len(t.onRequestData) > 0 {
 		msg := HttpResponseData{Request: t, Data: data, Completed: completed}
 		for _, r := range t.onResponseData {
@@ -125,15 +122,9 @@ func (t *TunneledRequest) EmitResponseData(origin int, data []byte, completed bo
 			}
 		}
 	}
-
-	if !completed {
-		return
-	}
-
-	t.emitComplete(origin)
 }
 
-func (t *TunneledRequest) EmitError(origin int, error error, timeout bool) {
+func (t *TunneledRequest) EmitError(origin int, err error, timeout bool) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
@@ -148,28 +139,15 @@ func (t *TunneledRequest) EmitError(origin int, error error, timeout bool) {
 	}
 
 	if len(t.onError) > 0 {
-		msg := HttpError{Request: t, Error: error, Timeout: timeout}
+		msg := HttpError{Request: t, Error: err, Timeout: timeout}
 		for _, r := range t.onError {
 			if r.origin != origin {
 				r.action(msg)
 			}
 		}
 	}
-
-	t.emitComplete(origin)
 }
 
 func (t *TunneledRequest) Cancel(origin int) {
 	t.EmitError(origin, nil, true)
-}
-
-func (t *TunneledRequest) emitComplete(origin int) {
-	if len(t.onComplete) > 0 {
-		msg := HttpComplete{Request: t}
-		for _, r := range t.onComplete {
-			if r.origin != origin {
-				r.action(msg)
-			}
-		}
-	}
 }

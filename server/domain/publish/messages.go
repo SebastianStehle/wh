@@ -59,8 +59,3 @@ type HttpError struct {
 	// Indicate if the error is a timeout
 	Timeout bool
 }
-
-type HttpComplete struct {
-	// The actual request
-	Request *TunneledRequest
-}

@@ -1,7 +1,6 @@
 package publish
 
 import (
-	"fmt"
 	"io"
 
 	"go.uber.org/zap"
@@ -44,35 +43,33 @@ func (l *recorder) Listen(request *TunneledRequest) {
 	request.OnResponseStart(EventOrigin, l.OnResponseStart)
 	request.OnResponseData(EventOrigin, l.OnResponseData)
 	request.OnError(EventOrigin, l.OnError)
-	request.OnComplete(EventOrigin, l.OnComplete)
 }
 
 func (l *recorder) OnRequestData(msg HttpRequestData) {
 	data := msg.Data
-	if len(data) <= 0 {
-		return
-	}
+	if len(data) > 0 {
+		if l.requestWriter == nil {
+			writer, err := l.buckets.OpenRequestWriter(l.request.RequestId)
+			if err != nil {
+				l.logger.Error("Failed to open response writer",
+					zap.Error(err),
+				)
+				return
+			}
+			l.requestWriter = writer
+		}
 
-	if l.requestWriter == nil {
-		writer, err := l.buckets.OpenRequestWriter(l.request.RequestId)
+		n, err := l.requestWriter.Write(data)
 		if err != nil {
-			l.logger.Error("Failed to open response writer",
+			l.requestSize = -1
+			l.logger.Error("Failed to write to request writer",
 				zap.Error(err),
 			)
-			return
 		}
-		l.requestWriter = writer
+
+		l.requestSize += n
 	}
 
-	n, err := l.requestWriter.Write(data)
-	if err != nil {
-		l.requestSize = -1
-		l.logger.Error("Failed to write to request writer",
-			zap.Error(err),
-		)
-	}
-
-	l.requestSize += n
 	if msg.Completed {
 		l.closeRequestWriter()
 	}
@@ -84,42 +81,39 @@ func (l *recorder) OnResponseStart(msg HttpResponseStart) {
 
 func (l *recorder) OnResponseData(msg HttpResponseData) {
 	data := msg.Data
-	if len(data) <= 0 {
-		return
-	}
+	if len(data) > 0 {
+		if l.responseWriter == nil {
+			writer, err := l.buckets.OpenResponseWriter(l.request.RequestId)
+			if err != nil {
+				l.logger.Error("Failed to open response writer",
+					zap.Error(err),
+				)
+				return
+			}
+			l.responseWriter = writer
+		}
 
-	if l.responseWriter == nil {
-		writer, err := l.buckets.OpenResponseWriter(l.request.RequestId)
+		n, err := l.responseWriter.Write(data)
 		if err != nil {
-			l.logger.Error("Failed to open response writer",
+			l.responseSize = -1
+			l.logger.Error("Failed to write to response writer",
 				zap.Error(err),
 			)
-			return
 		}
-		l.responseWriter = writer
+
+		l.responseSize += n
 	}
 
-	x := string(data)
-	fmt.Println(x)
-	n, err := l.responseWriter.Write(data)
-	if err != nil {
-		l.responseSize = -1
-		l.logger.Error("Failed to write to response writer",
-			zap.Error(err),
-		)
-	}
-
-	l.responseSize += n
 	if msg.Completed {
-		l.closeResponseWriter()
+		l.complete(nil)
 	}
 }
 
 func (l *recorder) OnError(msg HttpError) {
-	l.error = msg.Error
+	l.complete(msg.Error)
 }
 
-func (l *recorder) OnComplete(msg HttpComplete) {
+func (l *recorder) complete(requestError error) {
 	l.closeRequestWriter()
 	l.closeResponseWriter()
 
@@ -128,7 +122,7 @@ func (l *recorder) OnComplete(msg HttpComplete) {
 		l.requestSize,
 		l.response,
 		l.responseSize,
-		l.error,
+		requestError,
 		l.request.Status)
 	if err != nil {
 		l.logger.Error("Failed to update request",

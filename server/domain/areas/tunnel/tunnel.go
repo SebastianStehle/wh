@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	generated "wh/domain/areas/tunnel/api/tunnel"
 	"wh/domain/publish"
 
@@ -36,9 +37,11 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 	requestStart := make(chan *publish.TunneledRequest)
 	responseData := make(chan *generated.ResponseData)
 	responseStart := make(chan *generated.ResponseStart)
-	tunnelDone := make(chan publish.HttpComplete)
-	tunnelError := make(chan publish.HttpError)
+	serverError := make(chan publish.HttpError)
 	unsubscribed := make(chan bool)
+
+	// Have a separate closed channel that is closed by the sender to avoid deadlocks.
+	closed := make(chan bool)
 
 	endpoint := ""
 	defer func() {
@@ -46,11 +49,7 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 
 		// Ensure that the goroutine completes when we are done with the tunnel.
 		// There is no guarantee that the channel stil has receivers, if it has already been completed.
-		select {
-		case unsubscribed <- true:
-		default:
-			return
-		}
+		unsubscribed <- true
 
 		s.publisher.Unsubscribe(endpoint)
 	}()
@@ -58,18 +57,13 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 	go func() {
 		// There is no weak map yet, therefore ensure to clean it up.
 		requests := make(map[string]*publish.TunneledRequest)
-		defer func() {
-			fmt.Printf("DONE")
-		}()
 
 		for {
 			select {
 			case <-unsubscribed:
+				close(closed)
 				return
-			case msg := <-tunnelDone:
-				delete(requests, msg.Request.RequestId)
 			case msg := <-requestStart:
-				requests[msg.RequestId] = msg
 				request := msg.Request
 
 				m := &generated.ServerMessage{
@@ -88,6 +82,9 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 					break
 				}
 
+				// Only add the requests to the pending list when the request start has been sent successfully.
+				requests[msg.RequestId] = msg
+
 				s.logger.Info("Forwarding request to client.",
 					zap.String("input.endpoint", endpoint),
 					zap.String("input.method", request.Method),
@@ -105,25 +102,10 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 					},
 				}
 
-				s.sendMessage(stream, msg.Request, m, true)
-
-			case msg := <-tunnelError:
-				errorText := ""
-				if msg.Error != nil {
-					errorText = msg.Error.Error()
+				if !s.sendMessage(stream, msg.Request, m, true) {
+					// An error always terminates the request.
+					delete(requests, msg.Request.RequestId)
 				}
-
-				m := &generated.ServerMessage{
-					TestMessageType: &generated.ServerMessage_Error{
-						Error: &generated.TransportError{
-							RequestId: &msg.Request.RequestId,
-							Error:     &errorText,
-							Timeout:   &msg.Timeout,
-						},
-					},
-				}
-
-				s.sendMessage(stream, msg.Request, m, false)
 
 			case msg := <-responseStart:
 				t, ok := requests[msg.GetRequestId()]
@@ -143,12 +125,36 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 
 				t.EmitResponseData(EventOrigin, msg.GetData(), msg.GetCompleted())
 
+				if msg.GetCompleted() {
+					// Default completion.
+					delete(requests, t.RequestId)
+				}
+
+			case msg := <-serverError:
+				m := &generated.ServerMessage{
+					TestMessageType: &generated.ServerMessage_Error{
+						Error: &generated.TransportError{
+							RequestId: &msg.Request.RequestId,
+							Error:     toError(msg.Error),
+							Timeout:   &msg.Timeout,
+						},
+					},
+				}
+
+				// An error always terminates the request.
+				delete(requests, msg.Request.RequestId)
+
+				s.sendMessage(stream, msg.Request, m, false)
+
 			case msg := <-clientError:
 				t, ok := requests[msg.GetRequestId()]
 				if !ok {
 					s.logUnknownRequest(msg.GetRequestId())
 					break
 				}
+
+				// An error always terminates the request.
+				delete(requests, t.RequestId)
 
 				t.EmitError(EventOrigin, errors.New(msg.GetError()), true)
 			}
@@ -178,37 +184,19 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 			endpoint = subscribeMessage.GetEndpoint()
 
 			if err := s.publisher.Subscribe(endpoint, func(request *publish.TunneledRequest) {
-				// There is no guarantee that the channel stil has receivers, if it has already been completed.
-				select {
-				case requestStart <- request:
-				default:
-					return
-				}
+				requestStart <- request
 
 				request.OnRequestData(EventOrigin, func(msg publish.HttpRequestData) {
-					// There is no guarantee that the channel stil has receivers, if it has already been completed.
 					select {
 					case requestData <- msg:
-					default:
-						return
+					case <-closed:
 					}
 				})
 
 				request.OnError(EventOrigin, func(msg publish.HttpError) {
-					// There is no guarantee that the channel stil has receivers, if it has already been completed.
 					select {
-					case tunnelError <- msg:
-					default:
-						return
-					}
-				})
-
-				request.OnComplete(EventOrigin, func(msg publish.HttpComplete) {
-					// There is no guarantee that the channel stil has receivers, if it has already been completed.
-					select {
-					case tunnelDone <- msg:
-					default:
-						return
+					case serverError <- msg:
+					case <-closed:
 					}
 				})
 			}); err != nil {
@@ -221,33 +209,24 @@ func (s *tunnelServer) Subscribe(stream Stream) error {
 			return fmt.Errorf("not subscribed yet")
 		}
 
-		start := message.GetResponseStart()
-		if start != nil {
-			// There is no guarantee that the channel stil has receivers, if it has already been completed.
+		if s := message.GetResponseStart(); s != nil {
 			select {
-			case responseStart <- start:
-			default:
-				return nil
+			case responseStart <- s:
+			case <-closed:
 			}
 		}
 
-		data := message.GetResponseData()
-		if data != nil {
-			// There is no guarantee that the channel stil has receivers, if it has already been completed.
+		if d := message.GetResponseData(); d != nil {
 			select {
-			case responseData <- data:
-			default:
-				return nil
+			case responseData <- d:
+			case <-closed:
 			}
 		}
 
-		e := message.GetError()
-		if e != nil {
-			// There is no guarantee that the channel stil has receivers, if it has already been completed.
+		if e := message.GetError(); e != nil {
 			select {
 			case clientError <- e:
-			default:
-				return nil
+			case <-closed:
 			}
 		}
 	}
@@ -275,22 +254,29 @@ func (s *tunnelServer) sendMessage(stream Stream, t *publish.TunneledRequest, ms
 	return true
 }
 
-func toHeaders(source map[string][]string) map[string]*generated.HttpHeaderValues {
-	headers := make(map[string]*generated.HttpHeaderValues)
-
+func toHeaders(source http.Header) map[string]*generated.HttpHeaderValues {
+	result := make(map[string]*generated.HttpHeaderValues, len(source))
 	for k, v := range source {
-		headers[k] = &generated.HttpHeaderValues{Values: v}
+		result[k] = &generated.HttpHeaderValues{Values: v}
 	}
 
-	return headers
+	return result
 }
 
-func fromHeaders(source map[string]*generated.HttpHeaderValues) map[string][]string {
-	headers := make(map[string][]string)
-
+func fromHeaders(source map[string]*generated.HttpHeaderValues) http.Header {
+	result := make(http.Header, len(source))
 	for k, v := range source {
-		headers[k] = v.Values
+		result[k] = v.Values
 	}
 
-	return headers
+	return result
+}
+
+func toError(err error) *string {
+	result := ""
+	if err != nil {
+		result = err.Error()
+	}
+
+	return &result
 }

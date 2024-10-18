@@ -141,7 +141,7 @@
                         existing.parentElement.insertBefore(child, existing);
                         existing.remove();
                     } else {
-                        element.prepend(child);
+                        element.append(child);
                     }
     
                     htmx.process(child);

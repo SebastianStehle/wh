@@ -77,40 +77,36 @@ func (a apiHandler) Index(c echo.Context) error {
 	// Also cancel the request in case something goes wrong to forward the status to the client if not done yet.
 	defer tunneled.Cancel(EventOrigin)
 
+	// Use one channel per type to have a type safe behavior.
 	responseData := make(chan publish.HttpResponseData)
 	responseStart := make(chan publish.HttpResponseStart)
-	tunnelDone := make(chan publish.HttpComplete)
-	tunnelError := make(chan publish.HttpError)
+	serverClientError := make(chan publish.HttpError)
+
+	// Have a separate closed channel that is closed by the sender to avoid deadlocks.
+	closed := make(chan bool)
+	defer close(closed)
 
 	tunneled.OnResponseStart(EventOrigin, func(msg publish.HttpResponseStart) {
-		// There is no guarantee that the channel stil has receivers, if events arrive in the wrong order somehow.
 		select {
+		case <-closed:
+			return
 		case responseStart <- msg:
-		default:
 		}
 	})
 
 	tunneled.OnResponseData(EventOrigin, func(msg publish.HttpResponseData) {
-		// There is no guarantee that the channel stil has receivers, if events arrive in the wrong order somehow.
 		select {
+		case <-closed:
+			return
 		case responseData <- msg:
-		default:
 		}
 	})
 
 	tunneled.OnError(EventOrigin, func(msg publish.HttpError) {
-		// There is no guarantee that the channel stil has receivers, if events arrive in the wrong order somehow.
 		select {
-		case tunnelError <- msg:
-		default:
-		}
-	})
-
-	tunneled.OnComplete(EventOrigin, func(msg publish.HttpComplete) {
-		// There is no guarantee that the channel stil has receivers, if it has already been completed.
-		select {
-		case tunnelDone <- msg:
-		default:
+		case <-closed:
+			return
+		case serverClientError <- msg:
 		}
 	})
 
@@ -139,7 +135,7 @@ func (a apiHandler) Index(c echo.Context) error {
 		case <-ctx.Done():
 			response.WriteHeader(http.StatusGatewayTimeout)
 			return nil
-		case msg := <-tunnelError:
+		case msg := <-serverClientError:
 			if msg.Timeout {
 				response.WriteHeader(http.StatusGatewayTimeout)
 				return nil
@@ -163,8 +159,10 @@ func (a apiHandler) Index(c echo.Context) error {
 					return err
 				}
 			}
-		case <-tunnelDone:
-			return nil
+
+			if msg.Completed {
+				return nil
+			}
 		}
 	}
 }

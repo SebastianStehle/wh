@@ -21,7 +21,7 @@ type StoreEntry struct {
 	Response     *HttpResponseStart
 	ResponseSize int
 	Error        error
-	Completed    time.Time
+	Completed    *time.Time
 	Status       Status
 }
 
@@ -64,8 +64,8 @@ type record struct {
 	responseStatus  int32
 	responseHeaders *string
 	responseSize    int
-	error           string
-	completed       time.Time
+	error           *string
+	completed       *time.Time
 	status          Status
 	etag            int64
 }
@@ -77,7 +77,7 @@ type store struct {
 type Store interface {
 	LogRequest(requestId string, endpoint string, request HttpRequestStart) error
 
-	LogResponse(requestId string, requestSize int, response *HttpResponseStart, responseSize int, error error, status Status) error
+	LogResponse(requestId string, requestSize int, response *HttpResponseStart, responseSize int, requestError error, status Status) error
 
 	GetEntry(requestId string) (*StoreEntry, error)
 
@@ -140,7 +140,7 @@ func (l store) LogRequest(requestId string, endpoint string, request HttpRequest
 	return err
 }
 
-func (l store) LogResponse(requestId string, requestSize int, response *HttpResponseStart, responseSize int, error error, status Status) error {
+func (l store) LogResponse(requestId string, requestSize int, response *HttpResponseStart, responseSize int, requestError error, status Status) error {
 	const update string = `
 		UPDATE requests 
 		SET
@@ -169,8 +169,8 @@ func (l store) LogResponse(requestId string, requestSize int, response *HttpResp
 	}
 
 	errorText := ""
-	if error != nil {
-		errorText = error.Error()
+	if requestError != nil {
+		errorText = requestError.Error()
 	}
 
 	_, err := l.db.Exec(update,

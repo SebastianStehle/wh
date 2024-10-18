@@ -25,9 +25,9 @@ func NewTunneledRequest(localBase string, requestId string, method string, path 
 	request := &TunneledRequest{
 		Headers:         headers,
 		Method:          method,
-		onError:         make([]func(msg HttpError), 1),
-		onResponseData:  make([]func(msg HttpResponseData), 1),
-		onResponseStart: make([]func(msg HttpResponseStart), 1),
+		onError:         make([]func(msg HttpError), 0, 1),
+		onResponseData:  make([]func(msg HttpResponseData), 0, 1),
+		onResponseStart: make([]func(msg HttpResponseStart), 0, 1),
 		Path:            path,
 		requestBody:     newRequestReader(),
 		RequestId:       requestId,
@@ -37,8 +37,20 @@ func NewTunneledRequest(localBase string, requestId string, method string, path 
 	return request
 }
 
-func (r *TunneledRequest) AppendRequestData(data []byte, completed bool) {
+func (r *TunneledRequest) WriteRequestData(data []byte, completed bool) {
 	r.requestBody.AppendData(data, completed)
+}
+
+func (t *TunneledRequest) OnError(action func(HttpError)) {
+	t.onError = append(t.onError, action)
+}
+
+func (t *TunneledRequest) OnResponseData(action func(HttpResponseData)) {
+	t.onResponseData = append(t.onResponseData, action)
+}
+
+func (t *TunneledRequest) OnResponseStart(action func(HttpResponseStart)) {
+	t.onResponseStart = append(t.onResponseStart, action)
 }
 
 func (r *TunneledRequest) Cancel() {
