@@ -1,7 +1,9 @@
 package views
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"wh/domain/publish"
 )
 
@@ -21,26 +23,32 @@ type EventsVM struct {
 }
 
 type LogEntryVM struct {
-	Entry          publish.LogEntry
+	Entry          publish.StoreEntry
 	RequestEditor  *EditorInfo
 	ResponseEditor *EditorInfo
 }
 
 type EditorInfo struct {
-	Mode string
+	Mode   string
+	Source string
 }
 
-func BuildEventsVM(entries []publish.LogEntry) EventsVM {
+func BuildEventsVM(entries []publish.StoreEntry) EventsVM {
 	vms := make([]LogEntryVM, 0)
 
 	for _, entry := range entries {
 		entryVm := LogEntryVM{
-			Entry:         entry,
-			RequestEditor: getEditorInfo(entry.Request.Headers),
+			Entry: entry,
 		}
 
-		if entry.Response != nil {
-			entryVm.ResponseEditor = getEditorInfo(entry.Response.Headers)
+		if publish.HasRequestBody(&entry) {
+			source := fmt.Sprintf("/buckets/%s/request", entry.RequestId)
+			entryVm.RequestEditor = getEditorInfo(entry.Request.Headers, source)
+		}
+
+		if publish.HasResponseBody(&entry) {
+			source := fmt.Sprintf("/buckets/%s/response", entry.RequestId)
+			entryVm.ResponseEditor = getEditorInfo(entry.Response.Headers, source)
 		}
 
 		vms = append(vms, entryVm)
@@ -49,23 +57,29 @@ func BuildEventsVM(entries []publish.LogEntry) EventsVM {
 	return EventsVM{Entries: vms}
 }
 
-func getEditorInfo(headers http.Header) *EditorInfo {
-	contentType := headers["Content-Type"]
-	if len(contentType) == 0 {
+func getEditorInfo(header http.Header, source string) *EditorInfo {
+	t := header.Get("Content-Type")
+	if t == "" {
 		return nil
 	}
 
-	var (
-		mode string
-	)
+	parts := strings.Split(t, ";")
 
-	if contentType[0] == "text/json" || contentType[0] == "application/json" {
+	mode := ""
+	switch parts[0] {
+	case "text/json":
 		mode = "ace/mode/javascript"
+	case "application/json":
+		mode = "ace/mode/javascript"
+	case "text/html":
+		mode = "ace/mode/html"
+	case "application/xhtml+xml":
+		mode = "ace/mode/html"
 	}
 
-	if mode != "" {
-		return &EditorInfo{Mode: mode}
+	if mode == "" {
+		return nil
 	}
 
-	return nil
+	return &EditorInfo{Mode: mode, Source: source}
 }

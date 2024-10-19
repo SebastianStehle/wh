@@ -2,147 +2,95 @@ package publish
 
 import (
 	"errors"
-	"time"
+	"sync"
 
 	"github.com/google/uuid"
-	"github.com/spf13/viper"
+	"go.uber.org/zap"
 )
 
-type pathHandlers struct {
-	requests map[string]*responeHandler
-	response func(string, HttpRequest)
-}
-
-type responeHandler struct {
-	onResponse chan HttpResponse
-	onError    chan error
-}
-
 type publisher struct {
-	endpoints map[string]*pathHandlers
-	log       Log
+	endpoints map[string]func(*TunneledRequest)
+	buckets   Buckets
+	lock      sync.RWMutex
+	logger    *zap.Logger
+	store     Store
 }
 
-// There was no response within the defined duration.
-var ErrTimeout = errors.New("Timeout")
-
-// There is already a request handler.
+// ErrAlreadyRegistered There is already a request handler.
 var ErrAlreadyRegistered = errors.New("AlreadyRegistered")
 
-// There is no listener.
+// ErrNotRegistered There is no listener.
 var ErrNotRegistered = errors.New("NotRegistered")
 
 type Publisher interface {
-	Subscribe(endpoint string, handler func(string, HttpRequest)) error
+	Subscribe(endpoint string, handler func(*TunneledRequest)) error
 
 	Unsubscribe(endpoint string)
 
-	OnResponse(endpoint string, requestId string, response HttpResponse) error
-
-	OnError(endpoint string, requestId string, err error) error
-
-	ForwardRequest(endpoint string, timeout time.Duration, request HttpRequest) (*HttpResponse, error)
-
-	GetEntries(etag int64) ([]LogEntry, int64)
+	ForwardRequest(endpoint string, request HttpRequestStart) (*TunneledRequest, error)
 }
 
-func NewPublisher(config *viper.Viper) Publisher {
-	maxSize := config.GetInt("log.maxSize")
-	maxEntries := config.GetInt("log.maxEntries")
-
-	log := NewLog(maxSize, maxEntries)
-
+func NewPublisher(store Store, buckets Buckets, logger *zap.Logger) Publisher {
 	return &publisher{
-		endpoints: make(map[string]*pathHandlers),
-		log:       log,
+		endpoints: make(map[string]func(*TunneledRequest)),
+		buckets:   buckets,
+		lock:      sync.RWMutex{},
+		logger:    logger,
+		store:     store,
 	}
 }
 
-func (p publisher) GetEntries(etag int64) ([]LogEntry, int64) {
-	return p.log.GetEntries(etag)
-}
+func (p *publisher) Unsubscribe(endpoint string) {
+	// Ensure that only a single thread can access the map
+	p.lock.Lock()
+	defer p.lock.Unlock()
 
-func (p publisher) Unsubscribe(endpoint string) {
 	delete(p.endpoints, endpoint)
 }
 
-func (p publisher) Subscribe(endpoint string, handler func(string, HttpRequest)) error {
-	registration := p.endpoints[endpoint]
-	if registration != nil {
+func (p *publisher) Subscribe(endpoint string, handler func(request *TunneledRequest)) error {
+	// Ensure that only a single thread can access the map
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	registration, ok := p.endpoints[endpoint]
+	if ok || registration != nil {
 		return ErrAlreadyRegistered
 	}
 
-	registration = &pathHandlers{
-		requests: map[string]*responeHandler{},
-		response: handler,
-	}
-
-	p.endpoints[endpoint] = registration
+	p.endpoints[endpoint] = handler
 	return nil
 }
 
-func (p publisher) OnResponse(endpoint string, requestId string, response HttpResponse) error {
-	handler := p.getRequestHandler(endpoint, requestId)
-	if handler == nil {
-		return ErrNotRegistered
-	}
-
-	handler.onResponse <- response
-	return nil
-}
-
-func (p publisher) OnError(endpoint string, requestId string, err error) error {
-	handler := p.getRequestHandler(endpoint, requestId)
-	if handler == nil {
-		return ErrNotRegistered
-	}
-
-	handler.onError <- err
-	return nil
-}
-
-func (p publisher) ForwardRequest(endpoint string, timeout time.Duration, request HttpRequest) (*HttpResponse, error) {
+func (p *publisher) ForwardRequest(endpoint string, request HttpRequestStart) (*TunneledRequest, error) {
 	requestId := uuid.New().String()
 
-	// Event if nobody is listening, we would like to log the event.
-	p.log.LogRequest(requestId, endpoint, request)
+	handler, err := p.getHandler(endpoint)
+	if err != nil {
+		return nil, err
+	}
 
-	byEndpoint := p.endpoints[endpoint]
-	if byEndpoint == nil {
-		p.log.LogTimeout(requestId)
+	req := NewTunneledRequest(endpoint, requestId, request, p.logger)
+
+	// Record the request details and store them in a file and database.
+	rec := NewRecorder(req, p.store, p.buckets, p.logger)
+	rec.Listen(req)
+
+	// Publish the request first, so that we can receive events.
+	handler(req)
+
+	return req, nil
+}
+
+func (p *publisher) getHandler(endpoint string) (func(*TunneledRequest), error) {
+	// Ensure that only a single thread can access the map
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	byEndpoint, ok := p.endpoints[endpoint]
+	if !ok || byEndpoint == nil {
 		return nil, ErrNotRegistered
 	}
 
-	handler := responeHandler{
-		onResponse: make(chan HttpResponse),
-		onError:    make(chan error),
-	}
-
-	byEndpoint.requests[requestId] = &handler
-	byEndpoint.response(requestId, request)
-
-	timer := time.After(timeout)
-
-	defer delete(byEndpoint.requests, requestId)
-
-	select {
-	case response := <-handler.onResponse:
-		p.log.LogResponse(requestId, response)
-		return &response, nil
-	case err := <-handler.onError:
-		p.log.LogError(requestId, err)
-		return nil, err
-	case <-timer:
-		p.log.LogTimeout(requestId)
-		return nil, ErrTimeout
-	}
-}
-
-func (p publisher) getRequestHandler(endpoint string, requestId string) *responeHandler {
-	registration := p.endpoints[endpoint]
-	if registration == nil {
-		return nil
-	}
-
-	return registration.requests[requestId]
+	return byEndpoint, nil
 }

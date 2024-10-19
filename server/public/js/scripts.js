@@ -9,8 +9,12 @@
             }
 
             const mode = element.getAttribute('hx-mode');
-
             if (!mode) {
+                return;
+            }
+
+            const path = element.getAttribute('hx-path');
+            if (!path) {
                 return;
             }
 
@@ -18,7 +22,7 @@
                 case 'htmx:afterProcessNode':
                     const editor = ace.edit(element, {
                         minLines: 5,
-                        maxLines: 10,
+                        maxLines: 30,
                         fontSize: '11pt',
                         fontFamily: undefined,
                         padding: 8
@@ -27,6 +31,13 @@
                     editor.setTheme('ace/theme/github');
                     editor.session.setMode(mode);
                     editor.renderer.setScrollMargin(10, 10);
+
+                    // Keep it simple, no async.
+                    fetch(path)
+                        .then(x => x.text())
+                        .then(x => {
+                            editor.setValue(x)
+                        });
                     break;
             }
         }
@@ -130,7 +141,7 @@
                         existing.parentElement.insertBefore(child, existing);
                         existing.remove();
                     } else {
-                        element.prepend(child);
+                        element.append(child);
                     }
     
                     htmx.process(child);

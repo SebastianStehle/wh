@@ -1,13 +1,9 @@
 package tunnel
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"strings"
 	"time"
 	"wh/cli/api"
 	"wh/cli/api/tunnel"
@@ -15,12 +11,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	TABLE_COLUMN_WIDTH = 30
-)
-
 var TunnelCmd = &cobra.Command{
-	Use:   "tunnel <ENDPOINT> <API_KEY>",
+	Use:   "tunnel <ENDPOINT> <LOCAL_URL>",
 	Short: "Creates a tunnel with and endpoint",
 	Long: `Pass in the endpoint and the local server:
 
@@ -40,7 +32,10 @@ for example:
 			return
 		}
 
-		defer client.Connection.Close()
+		defer func() {
+			// There is very little we can do right now.
+			_ = client.Connection.Close()
+		}()
 
 		ctx, cancel := context.WithTimeout(ctx, 4*time.Hour)
 		defer cancel()
@@ -52,8 +47,8 @@ for example:
 			return
 		}
 
-		subscribeMessage := &tunnel.WebhookMessage{
-			TestMessageType: &tunnel.WebhookMessage_Subscribe{
+		subscribeMessage := &tunnel.ClientMessage{
+			TestMessageType: &tunnel.ClientMessage_Subscribe{
 				Subscribe: &tunnel.SubscribeRequest{
 					Endpoint: &endpoint,
 				},
@@ -72,106 +67,184 @@ for example:
 		fmt.Printf("WEBHOOK TUNNEL")
 		fmt.Println()
 		fmt.Println()
-		fmt.Printf("Forwarding from:  %s\n", formatUrl(client.Config.Endpoint, "endpoints", endpoint))
+		fmt.Printf("Forwarding from:  %s\n", combineUrl(client.Config.Endpoint, "endpoints", endpoint))
 		fmt.Printf("Forwarding to:    %s\n", localBase)
 		fmt.Println()
 		fmt.Println("HTTP Requests")
 		fmt.Println("-------------")
 		fmt.Println()
 
+		clientError := make(chan HttpError)
+		requestData := make(chan *tunnel.RequestData)
+		requestStart := make(chan *tunnel.RequestStart)
+		responseData := make(chan HttpResponseData)
+		responseStart := make(chan HttpResponseStart)
+		serverError := make(chan *tunnel.TransportError)
+		unregister := make(chan *TunneledRequest)
+
+		go func() {
+			// This map is only used in this goroutine, therefore we don't have to send updates.
+			requests := make(map[string]*TunneledRequest)
+
+			for {
+				select {
+				case msg := <-requestStart:
+					request := NewTunneledRequest(localBase,
+						msg.GetRequestId(),
+						msg.GetMethod(),
+						msg.GetPath(),
+						fromHeaders(msg.GetHeaders()))
+
+					printStatus(request, "Started")
+
+					request.OnResponseStart(func(msg HttpResponseStart) {
+						responseStart <- msg
+					})
+
+					request.OnResponseData(func(msg HttpResponseData) {
+						responseData <- msg
+					})
+
+					request.OnError(func(msg HttpError) {
+						clientError <- msg
+					})
+
+					// Register the request immediately, because the actual consecutive request might arrive immediately.
+					requests[request.RequestId] = request
+
+					// Run the request in parallel to other requests.
+					go func() {
+						defer func() {
+							unregister <- request
+						}()
+
+						request.Run(ctx, 1*time.Hour)
+					}()
+
+				case msg := <-unregister:
+					// There are no weak refs in golang, therefore remove the completed request.
+					delete(requests, msg.RequestId)
+
+				case msg := <-requestData:
+					t, ok := requests[msg.GetRequestId()]
+					if !ok {
+						break
+					}
+
+					t.WriteRequestData(msg.GetData(), msg.GetCompleted())
+
+				case msg := <-responseStart:
+					t, ok := requests[msg.Request.RequestId]
+					if !ok {
+						break
+					}
+
+					m := &tunnel.ClientMessage{
+						TestMessageType: &tunnel.ClientMessage_ResponseStart{
+							ResponseStart: &tunnel.ResponseStart{
+								RequestId: &t.RequestId,
+								Headers:   toHeaders(msg.Headers),
+								Status:    &msg.Status,
+							},
+						},
+					}
+
+					if err := stream.Send(m); err != nil {
+						printStatus(t, "Error: Failed to send request to server. %v", err)
+					}
+
+				case msg := <-responseData:
+					t, ok := requests[msg.Request.RequestId]
+					if !ok {
+						break
+					}
+
+					m := &tunnel.ClientMessage{
+						TestMessageType: &tunnel.ClientMessage_ResponseData{
+							ResponseData: &tunnel.ResponseData{
+								RequestId: &t.RequestId,
+								Data:      msg.Data,
+								Completed: &msg.Completed,
+							},
+						},
+					}
+
+					if err := stream.Send(m); err != nil {
+						printStatus(t, "Error: Failed to send request to server. %v", err)
+					}
+
+				case msg := <-clientError:
+					t, ok := requests[msg.Request.RequestId]
+					if !ok {
+						break
+					}
+
+					m := &tunnel.ClientMessage{
+						TestMessageType: &tunnel.ClientMessage_Error{
+							Error: &tunnel.TransportError{
+								RequestId: &t.RequestId,
+								Error:     toError(msg.Error),
+								Timeout:   &msg.Timeout,
+							},
+						},
+					}
+
+					if err := stream.Send(m); err != nil {
+						printStatus(t, "Error: Failed with client error. %v", msg.Error)
+					}
+
+				case msg := <-serverError:
+					t, ok := requests[msg.GetRequestId()]
+					if !ok {
+						break
+					}
+
+					t.cancel()
+
+					if msg.GetTimeout() {
+						printStatus(t, "Error: Failed with server timeout")
+					} else {
+						printStatus(t, "Error: Failed with server error. %s", msg.GetError())
+					}
+				}
+			}
+		}()
+
 		for {
-			requestMessage, err := stream.Recv()
+			serverMessage, err := stream.Recv()
 			if err != nil {
 				fmt.Printf("Error: Connection closed by server: %v.\n", err)
 				return
 			}
 
-			path := requestMessage.GetPath()
-
-			fmt.Printf(" - %s %s",
-				formatCell(requestMessage.GetMethod(), 10),
-				formatCell(path, 30))
-
-			var responseMessage *tunnel.WebhookMessage
-
-			response, body, err := makeRequest(formatUrl(localBase, path), requestMessage)
-			if err != nil {
-				fmt.Printf("failed: could not create request: %v\n", err)
-
-				message := err.Error()
-				responseMessage = &tunnel.WebhookMessage{
-					TestMessageType: &tunnel.WebhookMessage_Error{
-						Error: &tunnel.HttpError{
-							RequestId: requestMessage.RequestId,
-							Error:     &message,
-						},
-					},
-				}
-			} else {
-				fmt.Printf("%d %s\n", response.StatusCode, http.StatusText(response.StatusCode))
-
-				responseHeaders := make(map[string]*tunnel.HttpHeaderValues, 0)
-				for header, v := range response.Header {
-					responseHeaders[header] = &tunnel.HttpHeaderValues{Values: v}
-				}
-
-				status := int32(response.StatusCode)
-				responseMessage = &tunnel.WebhookMessage{
-					TestMessageType: &tunnel.WebhookMessage_Response{
-						Response: &tunnel.HttpResponse{
-							Body:      body,
-							Status:    &status,
-							Headers:   headersToLocal(response),
-							RequestId: requestMessage.RequestId,
-						},
-					},
-				}
+			if s := serverMessage.GetRequestStart(); s != nil {
+				requestStart <- s
 			}
 
-			err = stream.Send(responseMessage)
-			if err != nil {
-				fmt.Printf("Error: Failed to send response to server. %v\n", err)
-				return
+			if d := serverMessage.GetRequestData(); d != nil {
+				requestData <- d
+			}
+
+			if e := serverMessage.GetError(); e != nil {
+				serverError <- e
 			}
 		}
 	},
 }
 
-func makeRequest(localUrl string, requestMessage *tunnel.HttpRequest) (*http.Response, []byte, error) {
-	requestBody := bytes.NewReader(requestMessage.GetBody())
+func printStatus(request *TunneledRequest, format string, a ...any) {
+	requestPath := request.Path
 
-	request, err := http.NewRequest(*requestMessage.Method, localUrl, requestBody)
-	if err != nil {
-		return nil, nil, err
+	// Both paths are technically not the same, but it looks weird.
+	if requestPath == "" {
+		requestPath = "/"
 	}
 
-	for header, v := range requestMessage.GetHeaders() {
-		for _, value := range v.GetValues() {
-			request.Header.Add(header, value)
-		}
-	}
+	prefix := fmt.Sprintf(" - %s %s ",
+		formatCell(request.Method, 10),
+		formatCell(requestPath, 30))
 
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	responseBody, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return response, responseBody, nil
-}
-
-func headersToLocal(response *http.Response) map[string]*tunnel.HttpHeaderValues {
-	result := make(map[string]*tunnel.HttpHeaderValues, 0)
-
-	for header, v := range response.Header {
-		result[header] = &tunnel.HttpHeaderValues{Values: v}
-	}
-
-	return result
+	fmt.Println(prefix + fmt.Sprintf(format, a...))
 }
 
 func formatCell(source string, max int) string {
@@ -185,15 +258,4 @@ func formatCell(source string, max int) string {
 
 		return source
 	}
-}
-
-func formatUrl(baseUrl string, paths ...string) string {
-	url := strings.TrimSuffix(baseUrl, "/")
-
-	for _, path := range paths {
-		url += "/"
-		url += strings.TrimPrefix(path, "/")
-	}
-
-	return url
 }

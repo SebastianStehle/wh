@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -32,11 +33,13 @@ import (
 var (
 	authenticator  auth.Authenticator
 	authMiddleware auth.AuthMiddleware
+	buckets        publish.Buckets
 	config         *viper.Viper
 	handleApi      api.ApiHandler
 	handleHome     home.HomeHandler
 	logger         *zap.Logger
 	publisher      publish.Publisher
+	store          publish.Store
 )
 
 func main() {
@@ -47,22 +50,29 @@ func main() {
 		panic(fmt.Errorf("fatal error reading config file: %w", err))
 	}
 
+	// Set default config for consecutive calls.
+	domain.SetDefaultConfig(config)
+
 	logger, err = log.NewLogger(config)
 	if err != nil {
 		panic(fmt.Errorf("fatal error creating logger: %w", err))
+	}
+
+	store, err = publish.NewStore(config)
+	if err != nil {
+		panic(fmt.Errorf("fatal error creating store: %w", err))
 	}
 
 	defer func(log *zap.Logger) {
 		_ = log.Sync()
 	}(logger)
 
-	domain.SetDefaultConfig(config)
-
-	publisher = publish.NewPublisher(config)
+	buckets = publish.NewFileBucket(config)
+	publisher = publish.NewPublisher(store, buckets, logger)
 	authenticator = auth.NewAuthenticator(config)
 	authMiddleware = auth.NewAuthMiddleware(authenticator, logger)
-	handleHome = home.NewHomeHandler(publisher, authenticator, logger)
-	handleApi = api.NewApiHandler(config, publisher, logger)
+	handleHome = home.NewHomeHandler(store, buckets, authenticator, logger)
+	handleApi = api.NewApiHandler(publisher, config, logger)
 
 	// Create a grpc server, but do not start it yet, because it is handled by the mux.
 	grpcServer := initGrpc()
@@ -84,7 +94,7 @@ func main() {
 	http1Server := &http.Server{Handler: h2c.NewHandler(mixedHandler, http2Server), Addr: httpAddress}
 
 	go func() {
-		if err := http1Server.ListenAndServe(); err != http.ErrServerClosed {
+		if err := http1Server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			logger.Fatal("Shutting down the server.",
 				zap.Error(err),
 			)
@@ -104,7 +114,7 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	http1Server.Shutdown(ctx)
+	_ = http1Server.Shutdown(ctx)
 }
 
 func startHttp() *echo.Echo {
@@ -121,6 +131,8 @@ func startHttp() *echo.Echo {
 
 	e.POST("/", handleHome.PostIndex, authMiddleware.MustNotBeAuthenticated)
 	e.GET("/", handleHome.GetIndex, authMiddleware.MustNotBeAuthenticated)
+	e.GET("/buckets/:id/request", handleHome.RequestBlob, authMiddleware.MustBeAuthenticated)
+	e.GET("/buckets/:id/response", handleHome.ResponseBlob, authMiddleware.MustBeAuthenticated)
 	e.GET("/internal", handleHome.GetInternal, authMiddleware.MustBeAuthenticated)
 	e.GET("/error", handleHome.GetError)
 	e.GET("/events", handleHome.GetEvents, authMiddleware.MustBeAuthenticated)
@@ -130,10 +142,10 @@ func startHttp() *echo.Echo {
 }
 
 func initGrpc() *grpc.Server {
-	server := grpc.NewServer()
+	serverG := grpc.NewServer()
 	service := tunnel.NewTunnelServer(publisher, logger)
 
-	generated.RegisterWebhookServiceServer(server, service)
+	generated.RegisterWebhookServiceServer(serverG, service)
 
-	return server
+	return serverG
 }

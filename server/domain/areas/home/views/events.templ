@@ -4,6 +4,7 @@ import "wh/domain/texts"
 import "net/http"
 import "strconv"
 import "strings"
+import "wh/domain/publish"
 
 templ EventsView(vm EventsVM) {
 	for _, e := range vm.Entries {
@@ -56,7 +57,7 @@ templ EventsView(vm EventsVM) {
 								<div class={ getStatusClass(e.Entry.Response.Status) }>
 									{ strconv.FormatInt(int64(e.Entry.Response.Status), 10) } { http.StatusText(int(e.Entry.Response.Status)) }
 								</div>
-							} else if e.Entry.Timeout {
+                            } else if e.Entry.Status == publish.StatusTimeout {
                                 <div class="badge badge-ghost">
                                     { texts.CommonRequestTimeoutLabel(ctx) }
                                 </div>
@@ -82,11 +83,7 @@ templ EventsView(vm EventsVM) {
                             @Headers(e.Entry.Request.Headers)
 
                             if e.RequestEditor != nil {
-                                @Body(e.RequestEditor, string(e.Entry.Request.Body))
-                                } else if len(e.Entry.Request.Body) > 0 {
-                                <div class="border-[1px] border-gray-200 p-4 text-sm">
-                                    { texts.CommonBodyNotRendered(ctx) }
-                                </div>
+                                @Body(e.RequestEditor)
                             }
                         </div>
 
@@ -103,13 +100,13 @@ templ EventsView(vm EventsVM) {
                                 @Headers(e.Entry.Response.Headers)
 
                                 if e.ResponseEditor != nil {
-                                    @Body(e.ResponseEditor, string(e.Entry.Response.Body))
-                                } else if len(e.Entry.Response.Body) > 0 {
+                                    @Body(e.ResponseEditor)
+                                } else if e.Entry.ResponseSize > 0 {
                                     <div class="border-[1px] border-gray-200 p-4 text-sm">
                                         { texts.CommonBodyNotRendered(ctx) }
                                     </div>
                                 }
-                            } else if e.Entry.Timeout {
+                            } else if e.Entry.Status == publish.StatusTimeout {
                                 <div class="border-[1px] border-gray-200 p-4 text-sm">
                                     { texts.CommonRequestTimeoutText(ctx) }
                                 </div>
@@ -151,8 +148,8 @@ templ Headers(headers http.Header) {
     </div>
 }
 
-templ Body(editor *EditorInfo, text string) {
+templ Body(editor *EditorInfo) {
     <div class="border-[1px] border-gray-200">
-	    <textarea hx-ext="ace" hx-mode={ editor.Mode }>{ text }</textarea>
+	    <textarea hx-ext="ace" hx-path={ editor.Source } hx-mode={ editor.Mode }></textarea>
     </div>
 }

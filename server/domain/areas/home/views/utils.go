@@ -33,10 +33,18 @@ func getStartTime(vm LogEntryVM) string {
 }
 
 func getCompleteTime(vm LogEntryVM) string {
+	if vm.Entry.Completed == nil {
+		return ""
+	}
+
 	return vm.Entry.Completed.Format(time.RFC822)
 }
 
 func getDuration(vm LogEntryVM) string {
+	if vm.Entry.Completed == nil {
+		return ""
+	}
+
 	return vm.Entry.Completed.Sub(vm.Entry.Started).String()
 }
 
